@@ -49,6 +49,42 @@ describe('cli', () => {
     expect(file.accounts[0]?.name).toBe('relay-a');
   });
 
+  it('skips duplicate accounts during import', async () => {
+    const importPath = join(tmpDir, 'duplicate.json');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      importPath,
+      JSON.stringify({
+        accounts: [
+          {
+            name: 'relay-a',
+            apiKey: 'sk-a',
+            baseUrl: 'https://a.example.com/v1'
+          },
+          {
+            name: 'relay-a',
+            apiKey: 'sk-b',
+            baseUrl: 'https://b.example.com/v1'
+          }
+        ]
+      }),
+      'utf8'
+    );
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'import', importPath]);
+
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.accounts.map((account) => account.name)).toEqual(['relay-a']);
+    expect(file.accounts[0]?.apiKey).toBe('sk-a');
+    expect(output.join('\n')).toContain('Imported 1 account');
+    expect(output.join('\n')).toContain('Skipped 1 duplicate account');
+  });
+
   it('sets up key-only files with one base url', async () => {
     const importPath = join(tmpDir, 'keys.txt');
     await mkdir(tmpDir, { recursive: true });
@@ -74,6 +110,33 @@ describe('cli', () => {
     expect(file.accounts.map((account) => account.name)).toEqual(['relay-1', 'relay-2']);
     expect(output.join('\n')).toContain('Imported 2 accounts');
     expect(output.join('\n')).toContain('Run: codex-relay');
+  });
+
+  it('skips duplicate accounts during setup', async () => {
+    const importPath = join(tmpDir, 'setup-duplicate.txt');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(importPath, 'sk-one\nsk-one\nsk-two\n', 'utf8');
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync([
+      'node',
+      'codex-relay',
+      'setup',
+      importPath,
+      '--base-url',
+      'https://relay.example.com/v1',
+      '--name',
+      'relay'
+    ]);
+
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.accounts.map((account) => account.name)).toEqual(['relay-1', 'relay-3']);
+    expect(output.join('\n')).toContain('Imported 2 accounts');
+    expect(output.join('\n')).toContain('Skipped 1 duplicate account');
   });
 
   it('sets up the default data.txt when no file argument is provided', async () => {

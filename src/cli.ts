@@ -4,8 +4,8 @@ import {
   addAccount,
   importAccountsFromFile,
   importSetupAccountsFromFile,
-  listAccounts,
   loadAccountsFile,
+  mergeImportedAccounts,
   removeAccount,
   setPreferredAccount,
   type AccountInput
@@ -25,8 +25,6 @@ export interface CliDependencies {
     dependencies: Parameters<typeof defaultRunManagedCodex>[1]
   ) => Promise<SpawnResult>;
 }
-
-const MANAGEMENT_COMMANDS = new Set(['add', 'list', 'remove', 'use', 'import', 'setup', 'test']);
 
 export function createCliProgram(dependencies: CliDependencies = {}): Command {
   const paths = dependencies.paths ?? resolveDataPaths();
@@ -92,13 +90,10 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   program
     .command('import')
     .argument('<file>')
-    .option('--overwrite')
-    .action(async (filePath: string, options: { overwrite?: boolean }) => {
+    .action(async (filePath: string) => {
       const accounts = await importAccountsFromFile(filePath);
-      for (const account of accounts) {
-        await addAccount(paths.accounts, account, { overwrite: Boolean(options.overwrite) });
-      }
-      output(`Imported ${accounts.length} account${accounts.length === 1 ? '' : 's'}`);
+      const imported = await mergeImportedAccounts(paths.accounts, accounts);
+      outputImportSummary(output, 'Imported', imported.length, accounts.length - imported.length);
     });
 
   program
@@ -106,8 +101,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument('[file]', 'setup file path', 'data.txt')
     .option('--base-url <url>')
     .option('--name <prefix>', 'account name prefix')
-    .option('--overwrite', 'overwrite generated account names', true)
-    .action(async (filePath: string, options: { baseUrl?: string; name?: string; overwrite?: boolean }) => {
+    .action(async (filePath: string, options: { baseUrl?: string; name?: string }) => {
       const importOptions: { baseUrl?: string; namePrefix?: string } = {};
       if (options.baseUrl) {
         importOptions.baseUrl = options.baseUrl;
@@ -116,10 +110,8 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         importOptions.namePrefix = options.name;
       }
       const accounts = await importSetupAccountsFromFile(filePath, importOptions);
-      for (const account of accounts) {
-        await addAccount(paths.accounts, account, { overwrite: options.overwrite !== false });
-      }
-      output(`Imported ${accounts.length} account${accounts.length === 1 ? '' : 's'}`);
+      const imported = await mergeImportedAccounts(paths.accounts, accounts);
+      outputImportSummary(output, 'Imported', imported.length, accounts.length - imported.length);
       output('Run: codex-relay "your task"');
     });
 
@@ -205,10 +197,8 @@ async function autoSetupFromDefaultFile(accountsPath: string, output: (text: str
   }
 
   const accounts = await importSetupAccountsFromFile('data.txt', {});
-  for (const account of accounts) {
-    await addAccount(accountsPath, account, { overwrite: true });
-  }
-  output(`Auto-imported ${accounts.length} account${accounts.length === 1 ? '' : 's'} from data.txt`);
+  const imported = await mergeImportedAccounts(accountsPath, accounts);
+  outputImportSummary(output, 'Auto-imported', imported.length, accounts.length - imported.length, ' from data.txt');
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -243,6 +233,19 @@ function parsePassthroughArgs(args: string[]): { accountName?: string; codexArgs
   return accountName ? { accountName, codexArgs } : { codexArgs };
 }
 
+function outputImportSummary(
+  output: (text: string) => void,
+  verb: 'Imported' | 'Auto-imported',
+  imported: number,
+  skipped: number,
+  suffix = ''
+): void {
+  output(`${verb} ${imported} account${imported === 1 ? '' : 's'}${suffix}`);
+  if (skipped > 0) {
+    output(`Skipped ${skipped} duplicate account${skipped === 1 ? '' : 's'}${suffix}`);
+  }
+}
+
 async function testRelayAccount(account: AccountInput, fetchImpl: typeof fetch): Promise<boolean> {
   const endpoint = `${account.baseUrl.replace(/\/+$/, '')}/models`;
   try {
@@ -255,10 +258,6 @@ async function testRelayAccount(account: AccountInput, fetchImpl: typeof fetch):
   } catch {
     return false;
   }
-}
-
-export function isManagementCommand(name: string | undefined): boolean {
-  return Boolean(name && MANAGEMENT_COMMANDS.has(name));
 }
 
 function isCommanderHelpExit(error: unknown): boolean {

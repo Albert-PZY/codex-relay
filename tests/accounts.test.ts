@@ -4,9 +4,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   addAccount,
+  addAccounts,
   importAccountsFromText,
   importKeyLinesWithBaseUrl,
   importSetupAccountsFromText,
+  mergeImportedAccounts,
   listAccounts,
   loadAccountsFile,
   removeAccount,
@@ -65,6 +67,88 @@ describe('account store', () => {
 
     const [account] = await listAccounts(accountsPath);
     expect(account?.apiKey).toBe('sk-b');
+  });
+
+  it('adds multiple accounts atomically', async () => {
+    await expect(
+      addAccounts(accountsPath, [
+        {
+          name: 'relay-a',
+          apiKey: 'sk-a',
+          baseUrl: 'https://relay-a.example.com/v1'
+        },
+        {
+          name: 'relay-a',
+          apiKey: 'sk-b',
+          baseUrl: 'https://relay-b.example.com/v1'
+        }
+      ])
+    ).rejects.toThrow(/already exists/i);
+
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.accounts).toHaveLength(0);
+  });
+
+  it('merges imported accounts while skipping duplicate names', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-existing',
+      baseUrl: 'https://existing.example.com/v1'
+    });
+
+    const imported = await mergeImportedAccounts(accountsPath, [
+      {
+        name: 'relay-a',
+        apiKey: 'sk-a2',
+        baseUrl: 'https://a2.example.com/v1'
+      },
+      {
+        name: 'relay-b',
+        apiKey: 'sk-b1',
+        baseUrl: 'https://b.example.com/v1'
+      },
+      {
+        name: 'relay-b',
+        apiKey: 'sk-b2',
+        baseUrl: 'https://b2.example.com/v1'
+      }
+    ]);
+
+    expect(imported.map((account) => account.name)).toEqual(['relay-b']);
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.accounts.map((account) => account.name)).toEqual(['relay-a', 'relay-b']);
+    expect(file.accounts[0]?.apiKey).toBe('sk-existing');
+    expect(file.accounts[1]?.apiKey).toBe('sk-b1');
+  });
+
+  it('merges imported accounts while skipping duplicate relay keys', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-same',
+      baseUrl: 'https://same.example.com/v1'
+    });
+
+    const imported = await mergeImportedAccounts(accountsPath, [
+      {
+        name: 'relay-b',
+        apiKey: 'sk-same',
+        baseUrl: 'https://same.example.com/v1'
+      },
+      {
+        name: 'relay-c',
+        apiKey: 'sk-same',
+        baseUrl: 'https://same.example.com/v1'
+      },
+      {
+        name: 'relay-d',
+        apiKey: 'sk-new',
+        baseUrl: 'https://same.example.com/v1'
+      }
+    ]);
+
+    expect(imported.map((account) => account.name)).toEqual(['relay-d']);
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.accounts.map((account) => account.name)).toEqual(['relay-a', 'relay-d']);
   });
 
   it('validates URLs and keys', async () => {

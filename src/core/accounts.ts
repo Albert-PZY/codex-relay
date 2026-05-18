@@ -40,34 +40,105 @@ export async function listAccounts(filePath: string): Promise<RelayAccount[]> {
   return (await loadAccountsFile(filePath)).accounts;
 }
 
+export async function addAccounts(
+  filePath: string,
+  inputs: AccountInput[],
+  options: { overwrite?: boolean } = {}
+): Promise<RelayAccount[]> {
+  if (inputs.length === 0) {
+    return [];
+  }
+
+  const addedAt = new Date().toISOString();
+  const accounts = inputs.map((input) =>
+    validateAccount({
+      ...input,
+      addedAt: input.addedAt ?? addedAt
+    })
+  );
+  const batchNames = new Set<string>();
+  for (const account of accounts) {
+    if (batchNames.has(account.name)) {
+      throw new Error(`Account "${account.name}" already exists in the import batch.`);
+    }
+    batchNames.add(account.name);
+  }
+  const file = await loadAccountsFile(filePath);
+  const nextAccounts = [...file.accounts];
+  const existingIndexes = new Map<string, number>();
+
+  nextAccounts.forEach((account, index) => {
+    existingIndexes.set(account.name, index);
+  });
+
+  for (const account of accounts) {
+    const existingIndex = existingIndexes.get(account.name);
+    if (existingIndex !== undefined) {
+      if (!options.overwrite) {
+        throw new Error(`Account "${account.name}" already exists.`);
+      }
+      nextAccounts[existingIndex] = account;
+      continue;
+    }
+
+    existingIndexes.set(account.name, nextAccounts.length);
+    nextAccounts.push(account);
+  }
+
+  await saveAccountsFile(filePath, {
+    ...file,
+    ...(file.preferred ? {} : { preferred: accounts[0]!.name }),
+    accounts: nextAccounts
+  });
+  return accounts;
+}
+
+export async function mergeImportedAccounts(filePath: string, inputs: AccountInput[]): Promise<RelayAccount[]> {
+  if (inputs.length === 0) {
+    return [];
+  }
+
+  const addedAt = new Date().toISOString();
+  const accounts = inputs.map((input) =>
+    validateAccount({
+      ...input,
+      addedAt: input.addedAt ?? addedAt
+    })
+  );
+  const file = await loadAccountsFile(filePath);
+  const seenNames = new Set(file.accounts.map((account) => account.name));
+  const seenFingerprints = new Set(file.accounts.map((account) => accountFingerprint(account)));
+  const imported: RelayAccount[] = [];
+
+  for (const account of accounts) {
+    const fingerprint = accountFingerprint(account);
+    if (seenNames.has(account.name) || seenFingerprints.has(fingerprint)) {
+      continue;
+    }
+    seenNames.add(account.name);
+    seenFingerprints.add(fingerprint);
+    imported.push(account);
+  }
+
+  if (imported.length === 0) {
+    return [];
+  }
+
+  await saveAccountsFile(filePath, {
+    ...file,
+    ...(file.preferred ? {} : { preferred: imported[0]!.name }),
+    accounts: [...file.accounts, ...imported]
+  });
+  return imported;
+}
+
 export async function addAccount(
   filePath: string,
   input: AccountInput,
   options: { overwrite?: boolean } = {}
 ): Promise<RelayAccount> {
-  const account = validateAccount({
-    ...input,
-    addedAt: input.addedAt ?? new Date().toISOString()
-  });
-  const file = await loadAccountsFile(filePath);
-  const existingIndex = file.accounts.findIndex((item) => item.name === account.name);
-
-  if (existingIndex >= 0 && !options.overwrite) {
-    throw new Error(`Account "${account.name}" already exists.`);
-  }
-
-  if (existingIndex >= 0) {
-    file.accounts[existingIndex] = account;
-  } else {
-    file.accounts.push(account);
-  }
-
-  if (!file.preferred) {
-    file.preferred = account.name;
-  }
-
-  await saveAccountsFile(filePath, file);
-  return account;
+  const [account] = await addAccounts(filePath, [input], options);
+  return account!;
 }
 
 export async function removeAccount(filePath: string, name: string): Promise<void> {
@@ -98,13 +169,6 @@ export async function setPreferredAccount(filePath: string, name: string): Promi
 
 export async function importAccountsFromFile(filePath: string): Promise<AccountInput[]> {
   return importAccountsFromText(await readFile(filePath, 'utf8'));
-}
-
-export async function importKeyLinesFromFile(
-  filePath: string,
-  options: { baseUrl: string; namePrefix?: string }
-): Promise<AccountInput[]> {
-  return importKeyLinesWithBaseUrl(await readFile(filePath, 'utf8'), options);
 }
 
 export async function importSetupAccountsFromFile(
@@ -453,6 +517,10 @@ function normalizeAccount(account: ParsedAccount): RelayAccount {
     normalized.model = account.model;
   }
   return normalized;
+}
+
+function accountFingerprint(account: Pick<RelayAccount, 'apiKey' | 'baseUrl' | 'model'>): string {
+  return [account.baseUrl, account.apiKey, account.model ?? ''].join('\u0001');
 }
 
 function isMissingFile(error: unknown): boolean {
