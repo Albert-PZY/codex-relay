@@ -374,10 +374,6 @@ class FakeHandle extends EventEmitter implements ProcessHandle {
     this.on('exit', callback);
   }
 
-  write(_data: string): void {
-    return undefined;
-  }
-
   kill(): void {
     this.killed = true;
     this.emit('exit', { exitCode: 1, signal: null });

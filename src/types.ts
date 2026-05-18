@@ -34,7 +34,6 @@ export interface DetectorMatch {
 
 export interface RunnerOptions {
   accountName?: string;
-  prompt?: string;
   codexArgs: string[];
   cwd?: string;
 }

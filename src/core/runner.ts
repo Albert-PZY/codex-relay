@@ -12,7 +12,6 @@ import type { RelayAccount, RunnerOptions, SpawnResult } from '../types.js';
 export interface ProcessHandle {
   onData(callback: (chunk: string) => void): void;
   onExit(callback: (exit: { exitCode: number | null; signal: NodeJS.Signals | null }) => void): void;
-  write(data: string): void;
   kill(): void;
 }
 
@@ -29,7 +28,6 @@ export interface RunnerDependencies {
   paths?: Pick<DataPaths, 'accounts' | 'state'>;
   adapter?: ProcessAdapter;
   output?: (chunk: string) => void;
-  input?: NodeJS.ReadStream;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 }
@@ -149,7 +147,6 @@ export async function runManagedCodex(
         availableAt: availableAt.toISOString()
       });
       state = await loadStateFile(paths.state);
-      void state;
     }
   }
 
@@ -248,10 +245,6 @@ class PtyProcessHandle implements ProcessHandle {
     this.terminal.onExit((event) => callback({ exitCode: event.exitCode, signal: null }));
   }
 
-  write(data: string): void {
-    this.terminal.write(data);
-  }
-
   kill(): void {
     this.terminal.kill();
   }
@@ -293,10 +286,6 @@ class ChildProcessHandle extends EventEmitter implements ProcessHandle {
 
   onExit(callback: (exit: { exitCode: number | null; signal: NodeJS.Signals | null }) => void): void {
     this.on('exit', callback);
-  }
-
-  write(data: string): void {
-    this.child.stdin?.write(data);
   }
 
   kill(): void {
