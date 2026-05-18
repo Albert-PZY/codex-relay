@@ -1,0 +1,57 @@
+{
+  "name": "codex-relay",
+  "version": "0.1.0",
+  "description": "Lightweight relay account pool manager for the Codex CLI.",
+  "type": "module",
+  "bin": {
+    "codex-relay": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "relay",
+    "cli",
+    "account-pool"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Albert-PZY/codex-relay.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Albert-PZY/codex-relay/issues"
+  },
+  "homepage": "https://github.com/Albert-PZY/codex-relay#readme",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "packageManager": "pnpm@11.1.0",
+  "dependencies": {
+    "@inquirer/prompts": "^8.0.1",
+    "commander": "^14.0.2",
+    "strip-ansi": "^7.1.2",
+    "zod": "^4.1.13"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.34",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14"
+  }
+}
