@@ -32,6 +32,7 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 ## Invariants
 
 - Account names are unique.
+- Import-style writes are idempotent: duplicate names and duplicate `baseUrl + apiKey + model` credentials are skipped instead of requiring manual cleanup.
 - Writes are atomic through a temporary file plus rename.
 - `data.txt`, `data.json`, and local runtime data are ignored by git.
 

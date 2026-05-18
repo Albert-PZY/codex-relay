@@ -27,6 +27,7 @@ status: active
 - `src/index.ts` is the package binary entry point.
 - `src/cli.ts` registers account CRUD, import, setup, test, and managed Codex passthrough.
 - `setup` defaults to `data.txt` and accepts segmented `base_url` blocks, standalone URL blocks, JSON pools, and key-only files when `--base-url` is provided.
+- `import`, `setup`, and first-run auto-import use one idempotent merge path that skips duplicate account names and duplicate relay credentials.
 - Before a managed run, `src/cli.ts` auto-imports `data.txt` only when the account store is empty.
 - `src/core/runner.ts` injects `OPENAI_API_KEY` and passes `-c openai_base_url="..."` per Codex child process.
 

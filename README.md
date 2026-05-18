@@ -46,6 +46,7 @@ codex-relay "帮我完成当前项目"
 ```
 
 工具发现本机还没有号池时，会自动读取当前目录的 `data.txt` 并导入。
+重复导入也没关系，已有账号名或同一个中转站 key 会自动跳过。
 
 如果 `data.txt` 只有 key，先执行：
 
@@ -96,13 +97,12 @@ codex-relay "你的任务"
 
 ## 6. 自动发布到 npm
 
-仓库已经配好 GitHub Actions。你只需要按这份文档把 `NPM_TOKEN` 填到 GitHub：
+仓库已经配好 GitHub Actions，只需要配置一次：
 
-```txt
-docs/npm-publish-setup.md
-```
-
-以后按 Conventional Commits 提交，例如：
+1. 登录 npm，进入 `Access Tokens`，创建一个能发布 `codex-relay` 的 token。
+2. 打开 GitHub 仓库 `Settings -> Secrets and variables -> Actions`。
+3. 新建仓库 secret，名字填 `NPM_TOKEN`，内容粘贴刚才的 npm token。
+4. 以后按 Conventional Commits 提交，例如：
 
 ```bash
 git commit -m "feat: add setup command"
