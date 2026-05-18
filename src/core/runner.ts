@@ -86,7 +86,7 @@ export async function runManagedCodex(
   const accountsFile = await loadAccountsFile(paths.accounts);
 
   if (accountsFile.accounts.length === 0) {
-    throw new Error('No relay accounts configured. Run `codex-relay setup data.txt --base-url https://your-relay.example.com/v1 --name relay` first.');
+    throw new Error('No relay accounts configured. Put your relay keys in data.txt, then run `codex-relay setup` first.');
   }
 
   let state = await loadStateFile(paths.state);

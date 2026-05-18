@@ -6,6 +6,7 @@ import {
   addAccount,
   importAccountsFromText,
   importKeyLinesWithBaseUrl,
+  importSetupAccountsFromText,
   listAccounts,
   loadAccountsFile,
   removeAccount,
@@ -221,6 +222,64 @@ describe('account store', () => {
         apiKey: 'sk-two',
         baseUrl: 'https://relay.example.com/v1'
       }
+    ]);
+  });
+
+  it('parses segmented data files with base_url lines and multiple keys', () => {
+    const accounts = importSetupAccountsFromText(`
+base_url = "https://relay-a.example.com/v1"
+sk-a1
+sk-a2
+
+----------------
+base_url = "https://relay-b.example.com/v1"
+sk-b1
+`, {});
+
+    expect(accounts).toEqual([
+      {
+        name: 'relay-a-example-com-1',
+        apiKey: 'sk-a1',
+        baseUrl: 'https://relay-a.example.com/v1'
+      },
+      {
+        name: 'relay-a-example-com-2',
+        apiKey: 'sk-a2',
+        baseUrl: 'https://relay-a.example.com/v1'
+      },
+      {
+        name: 'relay-b-example-com-1',
+        apiKey: 'sk-b1',
+        baseUrl: 'https://relay-b.example.com/v1'
+      }
+    ]);
+  });
+
+  it('uses one generated name prefix across segmented setup files', () => {
+    const accounts = importSetupAccountsFromText(
+      'base_url = "https://relay-a.example.com/v1"\nsk-a1\nbase_url = "https://relay-b.example.com/v1"\nsk-b1\n',
+      { namePrefix: 'relay' }
+    );
+
+    expect(accounts.map((account) => account.name)).toEqual(['relay-1', 'relay-2']);
+  });
+
+  it('ignores visual separator lines in key-only setup files', () => {
+    const accounts = importKeyLinesWithBaseUrl('sk-one\n——————————————————\nsk-two\n', {
+      baseUrl: 'https://relay.example.com/v1',
+      namePrefix: 'relay'
+    });
+
+    expect(accounts.map((account) => account.apiKey)).toEqual(['sk-one', 'sk-two']);
+  });
+
+  it('accepts a plain base url line before keys in setup files', () => {
+    const accounts = importSetupAccountsFromText('https://relay.example.com/v1\nsk-one\nsk-two\n', {});
+
+    expect(accounts.map((account) => account.name)).toEqual(['relay-example-com-1', 'relay-example-com-2']);
+    expect(accounts.map((account) => account.baseUrl)).toEqual([
+      'https://relay.example.com/v1',
+      'https://relay.example.com/v1'
     ]);
   });
 

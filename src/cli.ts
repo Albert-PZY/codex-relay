@@ -1,8 +1,9 @@
 import { Command } from 'commander';
+import { access } from 'node:fs/promises';
 import {
   addAccount,
   importAccountsFromFile,
-  importKeyLinesFromFile,
+  importSetupAccountsFromFile,
   listAccounts,
   loadAccountsFile,
   removeAccount,
@@ -102,18 +103,19 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .command('setup')
-    .argument('<file>')
-    .requiredOption('--base-url <url>')
+    .argument('[file]', 'setup file path', 'data.txt')
+    .option('--base-url <url>')
     .option('--name <prefix>', 'account name prefix')
     .option('--overwrite', 'overwrite generated account names', true)
-    .action(async (filePath: string, options: { baseUrl: string; name?: string; overwrite?: boolean }) => {
-      const importOptions: { baseUrl: string; namePrefix?: string } = {
-        baseUrl: options.baseUrl
-      };
+    .action(async (filePath: string, options: { baseUrl?: string; name?: string; overwrite?: boolean }) => {
+      const importOptions: { baseUrl?: string; namePrefix?: string } = {};
+      if (options.baseUrl) {
+        importOptions.baseUrl = options.baseUrl;
+      }
       if (options.name) {
         importOptions.namePrefix = options.name;
       }
-      const accounts = await importKeyLinesFromFile(filePath, importOptions);
+      const accounts = await importSetupAccountsFromFile(filePath, importOptions);
       for (const account of accounts) {
         await addAccount(paths.accounts, account, { overwrite: options.overwrite !== false });
       }
@@ -138,6 +140,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program.action(async () => {
     const passthrough = parsePassthroughArgs(program.args);
+    await autoSetupFromDefaultFile(paths.accounts, output);
     const runnerOptions: RunnerOptions = {
       codexArgs: passthrough.codexArgs
     };
@@ -193,6 +196,28 @@ async function resolveAccountInput(
 async function promptText(message: string): Promise<string> {
   const { input } = await import('@inquirer/prompts');
   return input({ message });
+}
+
+async function autoSetupFromDefaultFile(accountsPath: string, output: (text: string) => void): Promise<void> {
+  const file = await loadAccountsFile(accountsPath);
+  if (file.accounts.length > 0 || !(await fileExists('data.txt'))) {
+    return;
+  }
+
+  const accounts = await importSetupAccountsFromFile('data.txt', {});
+  for (const account of accounts) {
+    await addAccount(accountsPath, account, { overwrite: true });
+  }
+  output(`Auto-imported ${accounts.length} account${accounts.length === 1 ? '' : 's'} from data.txt`);
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parsePassthroughArgs(args: string[]): { accountName?: string; codexArgs: string[] } {

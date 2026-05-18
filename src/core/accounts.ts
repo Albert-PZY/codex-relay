@@ -107,6 +107,13 @@ export async function importKeyLinesFromFile(
   return importKeyLinesWithBaseUrl(await readFile(filePath, 'utf8'), options);
 }
 
+export async function importSetupAccountsFromFile(
+  filePath: string,
+  options: { baseUrl?: string; namePrefix?: string }
+): Promise<AccountInput[]> {
+  return importSetupAccountsFromText(await readFile(filePath, 'utf8'), options);
+}
+
 export function importAccountsFromText(raw: string): AccountInput[] {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -124,6 +131,37 @@ export function importAccountsFromText(raw: string): AccountInput[] {
     .map(parseTextImportLine);
 }
 
+export function importSetupAccountsFromText(
+  raw: string,
+  options: { baseUrl?: string; namePrefix?: string }
+): AccountInput[] {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    return parseJsonImport(trimmed);
+  }
+
+  if (raw.split(/\r?\n/).some((line) => parseBaseUrlAssignment(line) || parseStandaloneBaseUrlLine(line.trim()))) {
+    return parseSegmentedSetupText(raw, options);
+  }
+
+  if (options.baseUrl) {
+    return importKeyLinesWithBaseUrl(raw, {
+      baseUrl: options.baseUrl,
+      ...(options.namePrefix ? { namePrefix: options.namePrefix } : {})
+    });
+  }
+
+  if (firstEffectiveLine(raw)?.startsWith('http')) {
+    return importAccountsFromText(raw);
+  }
+
+  throw new Error('No base URL found. Add a `base_url = "https://.../v1"` line or run with `--base-url <url>`.');
+}
+
 export function importKeyLinesWithBaseUrl(
   raw: string,
   options: { baseUrl: string; namePrefix?: string }
@@ -136,7 +174,7 @@ export function importKeyLinesWithBaseUrl(
   const keys = raw
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#'));
+    .filter(isEffectiveDataLine);
 
   if (keys.length === 0) {
     throw new Error('No API keys found in the import file.');
@@ -208,6 +246,107 @@ function parseTextImportLine(line: string, index: number): AccountInput {
     apiKey,
     baseUrl
   };
+}
+
+function parseSegmentedSetupText(
+  raw: string,
+  options: { baseUrl?: string; namePrefix?: string }
+): AccountInput[] {
+  const groups: Array<{ baseUrl: string; keys: string[]; index: number }> = [];
+  let current: { baseUrl: string; keys: string[]; index: number } | undefined;
+
+  for (const line of raw.split(/\r?\n/).map((item) => item.trim())) {
+    if (!isEffectiveDataLine(line)) {
+      continue;
+    }
+    const assignedBaseUrl = parseBaseUrlAssignment(line);
+    const inlineBaseUrl = parseStandaloneBaseUrlLine(line);
+    if (assignedBaseUrl || inlineBaseUrl) {
+      current = {
+        baseUrl: assignedBaseUrl || inlineBaseUrl || '',
+        keys: [],
+        index: groups.length
+      };
+      groups.push(current);
+      continue;
+    }
+    if (!current) {
+      if (!options.baseUrl) {
+        throw new Error('No base URL found before API key. Add a `base_url = "https://.../v1"` line first.');
+      }
+      current = {
+        baseUrl: options.baseUrl,
+        keys: [],
+        index: groups.length
+      };
+      groups.push(current);
+    }
+    current.keys.push(requireNonEmptyKey(line));
+  }
+
+  if (groups.length === 0) {
+    throw new Error('No relay accounts found in the setup file.');
+  }
+
+  let globalIndex = 0;
+  const baseNameCounts = new Map<string, number>();
+  const accounts = groups.flatMap((group) => {
+    if (group.keys.length === 0) {
+      throw new Error(`No API keys found after base URL ${group.baseUrl}.`);
+    }
+    return group.keys.map((apiKey) => {
+      const baseCount = baseNameCounts.get(group.baseUrl) ?? 0;
+      const name = options.namePrefix
+        ? `${options.namePrefix}-${globalIndex + 1}`
+        : `${inferName(group.baseUrl, group.index)}-${baseCount + 1}`;
+      globalIndex += 1;
+      baseNameCounts.set(group.baseUrl, baseCount + 1);
+      return {
+        name,
+        apiKey,
+        baseUrl: group.baseUrl
+      };
+    });
+  });
+
+  return accounts;
+}
+
+function parseBaseUrlAssignment(line: string): string | undefined {
+  const match = line.match(/^(?:base_url|baseUrl|baseURL|url)\s*[:=]\s*["']?([^"'\s]+)["']?\s*$/i);
+  const baseUrl = match?.[1]?.trim();
+  if (!baseUrl) {
+    return undefined;
+  }
+  if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+    throw new Error('Base URL must start with http:// or https://.');
+  }
+  return baseUrl;
+}
+
+function parseStandaloneBaseUrlLine(line: string): string | undefined {
+  if (!line.startsWith('http://') && !line.startsWith('https://')) {
+    return undefined;
+  }
+  if (line.includes(',')) {
+    return undefined;
+  }
+  return line;
+}
+
+function firstEffectiveLine(raw: string): string | undefined {
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(isEffectiveDataLine);
+}
+
+function isEffectiveDataLine(line: string): boolean {
+  return Boolean(line) && !line.startsWith('#') && !isSeparatorLine(line);
+}
+
+function isSeparatorLine(line: string): boolean {
+  return /^[-_=*—–]+$/.test(line.trim());
 }
 
 function extractImportRecords(parsed: unknown): unknown[] {

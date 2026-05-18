@@ -76,6 +76,30 @@ describe('cli', () => {
     expect(output.join('\n')).toContain('Run: codex-relay');
   });
 
+  it('sets up the default data.txt when no file argument is provided', async () => {
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(join(tmpDir, 'data.txt'), 'base_url = "https://relay.example.com/v1"\nsk-one\n', 'utf8');
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: () => undefined
+    });
+    const cwd = process.cwd();
+
+    try {
+      process.chdir(tmpDir);
+      await program.parseAsync(['node', 'codex-relay', 'setup']);
+    } finally {
+      process.chdir(cwd);
+    }
+
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.accounts[0]).toMatchObject({
+      name: 'relay-example-com-1',
+      apiKey: 'sk-one',
+      baseUrl: 'https://relay.example.com/v1'
+    });
+  });
+
   it('tests accounts with an injected fetch implementation', async () => {
     const output: string[] = [];
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }));
@@ -113,6 +137,36 @@ describe('cli', () => {
         accountName: 'relay-a',
         codexArgs: ['hello']
       }),
+      expect.objectContaining({ paths: { accounts: accountsPath, state: statePath } })
+    );
+  });
+
+  it('auto-imports data.txt before the first managed run', async () => {
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(join(tmpDir, 'data.txt'), 'base_url = "https://relay.example.com/v1"\nsk-one\n', 'utf8');
+    const runManagedCodex = vi.fn(async () => ({
+      exitCode: 0,
+      signal: null,
+      usedAccount: 'relay-example-com-1'
+    }));
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: () => undefined,
+      runManagedCodex
+    });
+    const cwd = process.cwd();
+
+    try {
+      process.chdir(tmpDir);
+      await program.parseAsync(['node', 'codex-relay', 'hello']);
+    } finally {
+      process.chdir(cwd);
+    }
+
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.accounts[0]?.name).toBe('relay-example-com-1');
+    expect(runManagedCodex).toHaveBeenCalledWith(
+      expect.objectContaining({ codexArgs: ['hello'] }),
       expect.objectContaining({ paths: { accounts: accountsPath, state: statePath } })
     );
   });
