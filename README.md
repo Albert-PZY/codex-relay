@@ -84,6 +84,22 @@ JSON import:
 }
 ```
 
+One relay with multiple keys:
+
+```json
+{
+  "relays": [
+    {
+      "name": "relay-a",
+      "baseUrl": "https://relay-a.example.com/v1",
+      "apiKeys": ["sk-xxx", "sk-yyy"]
+    }
+  ]
+}
+```
+
+This expands to `relay-a-1`, `relay-a-2`, and so on. If the first key under the same relay is unavailable, rotation continues to the next key.
+
 ## How Rotation Works
 
 For every managed run, `codex-relay`:
@@ -125,3 +141,5 @@ This project intentionally uses a small dependency set: TypeScript, commander, z
 ## Release
 
 Release automation is based on Conventional Commits and release-please. Merging a release PR creates a GitHub Release. The publish workflow then runs `pnpm publish --provenance --access public`.
+
+For step-by-step setup, read `docs/npm-publish-setup.md`.
