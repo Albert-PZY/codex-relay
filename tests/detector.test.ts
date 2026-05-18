@@ -24,6 +24,12 @@ describe('quota detector', () => {
     expect(result.retryAfterMs).toBe(30_000);
   });
 
+  it('extracts available-in retry metadata in minutes', () => {
+    const result = detectOutput('Model will be available in 2 minutes');
+
+    expect(result.retryAfterMs).toBe(120_000);
+  });
+
   it('supports custom quota patterns', () => {
     expect(detectOutput('balance depleted', ['balance depleted'])).toMatchObject({
       confidence: 'high',
@@ -36,5 +42,12 @@ describe('quota detector', () => {
 
     expect(extractSessionId(`session_id: ${id}`)).toBe(id);
     expect(extractSessionId(`Conversation ID ${id}`)).toBe(id);
+  });
+
+  it('ignores normal transcript text', () => {
+    expect(detectOutput('Here is the refactor plan.')).toEqual({
+      confidence: 'none'
+    });
+    expect(extractSessionId('no uuid here')).toBeUndefined();
   });
 });

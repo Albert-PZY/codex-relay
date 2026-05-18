@@ -116,6 +116,120 @@ describe('account store', () => {
     });
   });
 
+  it('expands relay pools with multiple keys per base url', () => {
+    const accounts = importAccountsFromText(
+      JSON.stringify({
+        relays: [
+          {
+            name: 'relay-a',
+            baseUrl: 'https://relay-a.example.com/v1',
+            apiKeys: ['sk-a1', 'sk-a2']
+          },
+          {
+            name: 'relay-b',
+            baseUrl: 'https://relay-b.example.com/v1',
+            keys: ['sk-b1']
+          }
+        ]
+      })
+    );
+
+    expect(accounts).toEqual([
+      {
+        name: 'relay-a-1',
+        apiKey: 'sk-a1',
+        baseUrl: 'https://relay-a.example.com/v1'
+      },
+      {
+        name: 'relay-a-2',
+        apiKey: 'sk-a2',
+        baseUrl: 'https://relay-a.example.com/v1'
+      },
+      {
+        name: 'relay-b-1',
+        apiKey: 'sk-b1',
+        baseUrl: 'https://relay-b.example.com/v1'
+      }
+    ]);
+  });
+
+  it('parses direct json arrays and pools field', () => {
+    const direct = importAccountsFromText(
+      JSON.stringify([
+        {
+          name: 'direct',
+          apiKey: 'sk-direct',
+          baseUrl: 'https://direct.example.com/v1'
+        }
+      ])
+    );
+    const pools = importAccountsFromText(
+      JSON.stringify({
+        pools: [
+          {
+            name: 'pool',
+            baseUrl: 'https://pool.example.com/v1',
+            keys: ['sk-pool']
+          }
+        ]
+      })
+    );
+
+    expect(direct[0]?.name).toBe('direct');
+    expect(pools[0]).toMatchObject({
+      name: 'pool-1',
+      apiKey: 'sk-pool',
+      baseUrl: 'https://pool.example.com/v1'
+    });
+  });
+
+  it('rejects relay pools with empty key arrays', () => {
+    expect(() =>
+      importAccountsFromText(
+        JSON.stringify({
+          relays: [
+            {
+              name: 'empty',
+              baseUrl: 'https://empty.example.com/v1',
+              keys: []
+            }
+          ]
+        })
+      )
+    ).toThrow(/key/i);
+  });
+
+  it('rejects key-only text imports because base url is required', () => {
+    expect(() => importAccountsFromText('sk-key-without-base-url')).toThrow(/base url/i);
+  });
+
+  it('keeps preferred account when overwriting an existing account', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+    await setPreferredAccount(accountsPath, 'relay-b');
+    await addAccount(
+      accountsPath,
+      {
+        name: 'relay-a',
+        apiKey: 'sk-a2',
+        baseUrl: 'https://a2.example.com/v1'
+      },
+      { overwrite: true }
+    );
+
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.preferred).toBe('relay-b');
+    expect(file.accounts.find((account) => account.name === 'relay-a')?.apiKey).toBe('sk-a2');
+  });
+
   it('writes pretty json', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',

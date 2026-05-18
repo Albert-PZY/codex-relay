@@ -119,43 +119,83 @@ export function importAccountsFromText(raw: string): AccountInput[] {
 
 function parseJsonImport(raw: string): AccountInput[] {
   const parsed = JSON.parse(raw) as unknown;
-  const records = Array.isArray(parsed)
-    ? parsed
-    : typeof parsed === 'object' && parsed !== null && 'accounts' in parsed
-      ? (parsed as { accounts: unknown }).accounts
-      : [];
+  const records = extractImportRecords(parsed);
 
   if (!Array.isArray(records)) {
     throw new Error('Invalid import file: accounts must be an array.');
   }
 
-  return records.map((record, index) => {
+  return records.flatMap((record, index) => {
     const source = record as Partial<AccountInput> & {
       key?: string;
       baseURL?: string;
       url?: string;
+      apiKeys?: string[];
+      keys?: string[];
     };
+    const baseUrl = source.baseUrl || source.baseURL || source.url || '';
+    const keys = source.apiKeys || source.keys;
+    if (Array.isArray(keys)) {
+      if (!baseUrl) {
+        throw new Error('Invalid import file: base URL is required for relay key pools.');
+      }
+      if (keys.length === 0) {
+        throw new Error('Invalid import file: key pool must contain at least one API key.');
+      }
+      return keys.map((apiKey, keyIndex) => ({
+        name: `${source.name || inferName(baseUrl, index)}-${keyIndex + 1}`,
+        apiKey: requireNonEmptyKey(apiKey),
+        baseUrl,
+        ...(source.model ? { model: source.model } : {})
+      }));
+    }
     const account: AccountInput = {
-      name: source.name || inferName(source.baseUrl || '', index),
+      name: source.name || inferName(baseUrl, index),
       apiKey: source.apiKey || source.key || '',
-      baseUrl: source.baseUrl || source.baseURL || source.url || ''
+      baseUrl
     };
     if (source.model) {
       account.model = source.model;
     }
-    return account;
+    return [account];
   });
 }
 
 function parseTextImportLine(line: string, index: number): AccountInput {
   const parts = line.split(',').map((part) => part.trim());
   const [baseUrl = '', apiKey = '', name] = parts;
+  if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+    throw new Error('Invalid import line: base URL is required before the API key.');
+  }
+  if (!apiKey) {
+    throw new Error('Invalid import line: API key is required after the base URL.');
+  }
 
   return {
     name: name || inferName(baseUrl, index),
     apiKey,
     baseUrl
   };
+}
+
+function extractImportRecords(parsed: unknown): unknown[] {
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return [];
+  }
+  const object = parsed as {
+    accounts?: unknown;
+    relays?: unknown;
+    pools?: unknown;
+  };
+  for (const field of [object.accounts, object.relays, object.pools]) {
+    if (Array.isArray(field)) {
+      return field;
+    }
+  }
+  return [];
 }
 
 function inferName(baseUrl: string, index: number): string {
@@ -165,6 +205,13 @@ function inferName(baseUrl: string, index: number): string {
   } catch {
     return `relay-${index + 1}`;
   }
+}
+
+function requireNonEmptyKey(apiKey: string): string {
+  if (!apiKey?.trim()) {
+    throw new Error('Invalid import file: API key cannot be empty.');
+  }
+  return apiKey;
 }
 
 function validateAccount(raw: unknown): RelayAccount {

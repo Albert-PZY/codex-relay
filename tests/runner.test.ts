@@ -157,19 +157,188 @@ describe('runner', () => {
     expect(result.usedAccount).toBe('relay-b');
     expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-b');
   });
+
+  it('rotates across multiple keys under the same relay base url', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a-1',
+      apiKey: 'sk-bad-1',
+      baseUrl: 'https://same-relay.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-a-2',
+      apiKey: 'sk-bad-2',
+      baseUrl: 'https://same-relay.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-a-3',
+      apiKey: 'sk-good-3',
+      baseUrl: 'https://same-relay.example.com/v1'
+    });
+
+    const adapter = new FakeAdapter([
+      ['HTTP 401 invalid api key\n'],
+      ['insufficient balance\n'],
+      ['continued\n']
+    ]);
+
+    const result = await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a-1' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-a-3');
+    expect(adapter.spawns.map((spawn) => spawn.env.OPENAI_API_KEY)).toEqual([
+      'sk-bad-1',
+      'sk-bad-2',
+      'sk-good-3'
+    ]);
+    expect(new Set(adapter.spawns.map((spawn) => spawn.args[1]))).toEqual(
+      new Set(['openai_base_url="https://same-relay.example.com/v1"'])
+    );
+  });
+
+  it('does not rotate on medium-confidence output when the process exits successfully', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const adapter = new FakeAdapter([['rate limit noted, but recovered\n']]);
+
+    const result = await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-a');
+    expect(adapter.spawns).toHaveLength(1);
+  });
+
+  it('rotates on medium-confidence output when the process exits unsuccessfully', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const adapter = new FakeAdapter([
+      {
+        chunks: ['too many requests\n'],
+        exitCode: 1
+      },
+      ['continued\n']
+    ]);
+
+    const result = await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
+  });
+
+  it('records retry windows from detector output', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const adapter = new FakeAdapter([
+      ['insufficient balance retry after 30s\n'],
+      ['continued\n']
+    ]);
+
+    await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined,
+        now: () => new Date('2026-05-19T00:00:00.000Z')
+      }
+    );
+
+    const { loadStateFile } = await import('../src/core/state.js');
+    const state = await loadStateFile(statePath);
+    expect(state.retryAvailability['relay-a']?.availableAt).toBe('2026-05-19T00:00:30.000Z');
+  });
+
+  it('fails clearly when every account is exhausted', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const adapter = new FakeAdapter([
+      ['insufficient balance\n'],
+      ['HTTP 401 invalid api key\n']
+    ]);
+
+    await expect(
+      runManagedCodex(
+        { codexArgs: ['do task'], accountName: 'relay-a' },
+        {
+          paths: { accounts: accountsPath, state: statePath },
+          adapter,
+          output: () => undefined
+        }
+      )
+    ).rejects.toThrow(/all relay accounts/i);
+  });
 });
+
+type FakeScript = string[] | { chunks: string[]; exitCode: number };
 
 class FakeAdapter implements ProcessAdapter {
   public spawns: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
-  private readonly scripts: string[][];
+  private readonly scripts: FakeScript[];
 
-  constructor(scripts: string[][]) {
+  constructor(scripts: FakeScript[]) {
     this.scripts = scripts;
   }
 
   spawn(command: string, args: string[], options: { env: NodeJS.ProcessEnv }): ProcessHandle {
     this.spawns.push({ command, args, env: options.env });
-    const handle = new FakeHandle(this.scripts.shift() ?? []);
+    const script = this.scripts.shift() ?? [];
+    const handle = Array.isArray(script)
+      ? new FakeHandle(script, 0)
+      : new FakeHandle(script.chunks, script.exitCode);
     handle.start();
     return handle;
   }
@@ -178,7 +347,10 @@ class FakeAdapter implements ProcessAdapter {
 class FakeHandle extends EventEmitter implements ProcessHandle {
   public killed = false;
 
-  constructor(private readonly chunks: string[]) {
+  constructor(
+    private readonly chunks: string[],
+    private readonly exitCode: number
+  ) {
     super();
   }
 
@@ -190,7 +362,7 @@ class FakeHandle extends EventEmitter implements ProcessHandle {
           return;
         }
       }
-      this.emit('exit', { exitCode: 0, signal: null });
+      this.emit('exit', { exitCode: this.exitCode, signal: null });
     });
   }
 
