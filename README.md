@@ -1,6 +1,6 @@
 # codex-relay
 
-Codex CLI 中转站号池工具。配置一次，之后直接用 `codex-relay` 跑任务；当前 key 余额不足、不可用、限额或中转站异常时，会自动切到下一个 key，并自动恢复上一次中断的 Codex 对话。
+Codex CLI 中转站号池工具。把中转站地址和 key 放进 `data.txt`，之后直接用 `codex-relay` 跑任务。第一次运行时会自动导入号池；当前 key 没余额、限额、失效或中转站异常时，会自动切到下一个 key，并自动恢复刚才中断的 Codex 对话。
 
 ## 1. 安装
 
@@ -8,14 +8,28 @@ Codex CLI 中转站号池工具。配置一次，之后直接用 `codex-relay` �
 npm install -g codex-relay
 ```
 
-要求：
+需要先装好：
 
 - Node.js `>=22 <23`
-- 已安装官方 `codex` CLI
+- 官方 `codex` CLI
 
-## 2. 最无脑配置方式
+## 2. 准备 data.txt
 
-如果你有一个纯 key 文件，比如 `data.txt`：
+最推荐直接写成这样：
+
+```txt
+base_url = "https://relay-a.example.com/v1"
+sk-a1
+sk-a2
+sk-a3
+
+----------------
+base_url = "https://relay-b.example.com/v1"
+sk-b1
+sk-b2
+```
+
+也可以只有 key，然后命令里指定一个中转站地址：
 
 ```txt
 sk-xxx
@@ -23,26 +37,34 @@ sk-yyy
 sk-zzz
 ```
 
-只需要执行：
+## 3. 直接开跑
 
-```bash
-codex-relay setup data.txt --base-url https://你的中转站地址/v1 --name relay
-```
-
-它会自动生成：
-
-```txt
-relay-1
-relay-2
-relay-3
-```
-
-这些账号使用同一个中转站 `baseUrl`，但 key 不同。前面的 key 用不了时，会自动继续切后面的 key。
-
-## 3. 开始使用
+如果 `data.txt` 里已经写了 `base_url`，可以直接执行：
 
 ```bash
 codex-relay "帮我完成当前项目"
+```
+
+工具发现本机还没有号池时，会自动读取当前目录的 `data.txt` 并导入。
+
+如果 `data.txt` 只有 key，先执行：
+
+```bash
+codex-relay setup --base-url https://你的中转站地址/v1 --name relay
+```
+
+想手动提前导入，也可以执行：
+
+```bash
+codex-relay setup
+```
+
+## 4. 常用操作
+
+查看号池：
+
+```bash
+codex-relay list
 ```
 
 指定从某个账号开始：
@@ -51,104 +73,49 @@ codex-relay "帮我完成当前项目"
 codex-relay --account relay-3 "继续刚才的任务"
 ```
 
-查看号池：
-
-```bash
-codex-relay list
-```
-
-测试号池连通性：
+测试所有账号是否能连上中转站：
 
 ```bash
 codex-relay test
 ```
 
-## 4. 其它导入方式
-
-一行一个中转站账号：
-
-```txt
-https://relay-a.example.com/v1,sk-xxx,relay-a
-https://relay-b.example.com/v1,sk-yyy,relay-b
-```
-
-导入：
-
-```bash
-codex-relay import accounts.txt --overwrite
-```
-
-JSON：
-
-```json
-{
-  "relays": [
-    {
-      "name": "relay-a",
-      "baseUrl": "https://relay-a.example.com/v1",
-      "apiKeys": ["sk-xxx", "sk-yyy", "sk-zzz"]
-    }
-  ]
-}
-```
-
-导入：
-
-```bash
-codex-relay import data.json --overwrite
-```
-
 ## 5. 常用命令
 
 ```bash
-codex-relay setup <key-file> --base-url <url> [--name relay]
-codex-relay import <file> [--overwrite]
-codex-relay add <name> --key <key> --base-url <url>
+codex-relay setup                         # 默认读取当前目录 data.txt
+codex-relay setup keys.txt --base-url <url>
 codex-relay list
-codex-relay test [name]
+codex-relay test
 codex-relay use <name>
 codex-relay remove <name>
-codex-relay [...codex 参数或 prompt]
+codex-relay add <name> --key <key> --base-url <url>
+codex-relay "你的任务"
 ```
 
-## 6. 它怎么自动切号
+本机配置保存在 `~/.codex-relay/`。工具不会修改 `~/.codex/config.toml`，也不会改官方 Codex 的登录文件。
 
-每次运行时，工具会：
+## 6. 自动发布到 npm
 
-1. 读取本机 `~/.codex-relay/accounts.json`
-2. 用当前账号启动官方 `codex`
-3. 注入当前账号的 `OPENAI_API_KEY`
-4. 用 `-c openai_base_url="..."` 临时指定中转站地址
-5. 发现余额不足、quota、401、402、invalid key、部分中转站错误时自动切号
-6. 切号后执行 `codex resume <session-id> Continue`
-7. 没拿到 session id 时才降级 `codex resume --last Continue`
-
-不会改你的 `~/.codex/config.toml`，也不会改官方 Codex 的登录文件。
-
-## 7. 本地数据位置
+仓库已经配好 GitHub Actions。你只需要按这份文档把 `NPM_TOKEN` 填到 GitHub：
 
 ```txt
-~/.codex-relay/
-  accounts.json
-  state.json
-  logs/
+docs/npm-publish-setup.md
 ```
 
-`data.txt`、`data.json`、`.env*` 默认不会被提交到 git。
+以后按 Conventional Commits 提交，例如：
 
-## 8. 开发和发布
+```bash
+git commit -m "feat: add setup command"
+git commit -m "fix: handle quota rotation"
+```
 
-开发：
+推送到 `main` 后，Release Please 会自动创建发版 PR；合并这个 PR 后会自动发布到 npm。
+
+## 7. 开发
 
 ```bash
 pnpm install
 pnpm lint
 pnpm test
 pnpm build
-```
-
-配置 GitHub 自动发布到 npm：
-
-```txt
-docs/npm-publish-setup.md
 ```

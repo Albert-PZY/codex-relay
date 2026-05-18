@@ -19,5 +19,5 @@ status: active
 
 ## Current Gaps
 
-- No implemented source tree exists yet.
-- Runtime behavior must be re-verified after the first Node.js implementation lands.
+- Runtime behavior now exists and should be kept in sync with the implementation.
+- The remaining gap is codifying the `setup` shortcut and auto-import flow in a dedicated contract note if they change again.

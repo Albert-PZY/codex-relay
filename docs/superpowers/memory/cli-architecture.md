@@ -25,7 +25,9 @@ status: active
 ## Entry Points
 
 - `src/index.ts` is the package binary entry point.
-- `src/cli.ts` registers account CRUD, import, test, and managed Codex passthrough.
+- `src/cli.ts` registers account CRUD, import, setup, test, and managed Codex passthrough.
+- `setup` defaults to `data.txt` and accepts segmented `base_url` blocks, standalone URL blocks, JSON pools, and key-only files when `--base-url` is provided.
+- Before a managed run, `src/cli.ts` auto-imports `data.txt` only when the account store is empty.
 - `src/core/runner.ts` injects `OPENAI_API_KEY` and passes `-c openai_base_url="..."` per Codex child process.
 
 ## Invariants
