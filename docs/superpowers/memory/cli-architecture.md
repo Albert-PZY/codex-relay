@@ -1,7 +1,7 @@
 ---
 type: module_card
 title: cli-architecture
-summary: Captures the intended runtime shape for codex-relay before implementation.
+summary: Captures the runtime shape for the codex-relay CLI.
 tags:
   - cli
   - architecture
@@ -10,7 +10,7 @@ owned_paths:
   - package.json
 entrypoints:
   - src/index.ts
-status: draft
+status: active
 ---
 
 # CLI Architecture
@@ -24,14 +24,16 @@ status: draft
 
 ## Entry Points
 
-- `src/index.ts` will be the package binary entry point.
-- User-facing commands will include account CRUD, import, test, and managed Codex passthrough.
+- `src/index.ts` is the package binary entry point.
+- `src/cli.ts` registers account CRUD, import, test, and managed Codex passthrough.
+- `src/core/runner.ts` injects `OPENAI_API_KEY` and passes `-c openai_base_url="..."` per Codex child process.
 
 ## Invariants
 
 - Do not modify the user's `~/.codex` configuration or auth files.
 - Keep account secrets outside the repository and under the user's home data directory.
 - Prefer exact session resume over "latest session" guessing.
+- Fall back to `resume --last Continue` only when the current output does not expose a session id.
 
 ## Extension Points
 
@@ -40,5 +42,5 @@ status: draft
 
 ## Common Pitfalls
 
-- PTY support can fail on some Windows machines if native dependencies are unavailable.
+- PTY support can fail on some Windows machines if native dependencies are unavailable; runtime falls back to a normal child process.
 - Quota detection must be conservative to avoid interrupting valid conversations.

@@ -9,7 +9,7 @@ owned_paths:
   - src/core/accounts.ts
   - src/core/state.ts
   - src/core/rotator.ts
-status: draft
+status: active
 ---
 
 # Account And State Contract
@@ -27,7 +27,7 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 
 - `accounts.json` contains `version`, `preferred`, `customQuotaPatterns`, and `accounts`.
 - Each account contains `name`, `apiKey`, `baseUrl`, optional `model`, and `addedAt`.
-- `state.json` contains `version`, `currentIndex`, `lastSuccessfulAccount`, `retryAvailability`, and `updatedAt`.
+- `state.json` contains `version`, `currentIndex`, optional `lastSuccessfulAccount`, `retryAvailability`, and `updatedAt`.
 
 ## Invariants
 
@@ -37,4 +37,4 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 
 ## Compatibility Notes
 
-- The first implementation should preserve versioned schemas so future migrations are explicit.
+- Versioned schemas must remain explicit so future migrations can be written deliberately.
