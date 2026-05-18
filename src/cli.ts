@@ -141,7 +141,14 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
 export async function main(argv: string[] = []): Promise<void> {
   const program = createCliProgram();
-  await program.parseAsync(['node', 'codex-relay', ...argv]);
+  try {
+    await program.parseAsync(['node', 'codex-relay', ...argv]);
+  } catch (error) {
+    if (isCommanderHelpExit(error)) {
+      return;
+    }
+    throw error;
+  }
 }
 
 async function resolveAccountInput(
@@ -205,4 +212,11 @@ async function testRelayAccount(account: AccountInput, fetchImpl: typeof fetch):
 
 export function isManagementCommand(name: string | undefined): boolean {
   return Boolean(name && MANAGEMENT_COMMANDS.has(name));
+}
+
+function isCommanderHelpExit(error: unknown): boolean {
+  return typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'commander.helpDisplayed';
 }

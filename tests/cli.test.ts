@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCliProgram } from '../src/cli.js';
+import { createCliProgram, main } from '../src/cli.js';
 import { loadAccountsFile } from '../src/core/accounts.js';
 
 const tmpDir = fileURLToPath(new URL('./tmp-cli/', import.meta.url));
@@ -88,5 +88,15 @@ describe('cli', () => {
       }),
       expect.objectContaining({ paths: { accounts: accountsPath, state: statePath } })
     );
+  });
+
+  it('prints help without throwing an error from main', async () => {
+    const output = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(main(['--help'])).resolves.toBeUndefined();
+
+    expect(output.mock.calls.flat().join('\n')).toContain('Usage: codex-relay');
+    expect(error).not.toHaveBeenCalled();
   });
 });
