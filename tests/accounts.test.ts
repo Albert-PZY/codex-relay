@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   addAccount,
   importAccountsFromText,
+  importKeyLinesWithBaseUrl,
   listAccounts,
   loadAccountsFile,
   removeAccount,
@@ -201,6 +202,26 @@ describe('account store', () => {
 
   it('rejects key-only text imports because base url is required', () => {
     expect(() => importAccountsFromText('sk-key-without-base-url')).toThrow(/base url/i);
+  });
+
+  it('turns key-only files into accounts when a base url is provided', () => {
+    const accounts = importKeyLinesWithBaseUrl('sk-one\nsk-two\n', {
+      baseUrl: 'https://relay.example.com/v1',
+      namePrefix: 'relay'
+    });
+
+    expect(accounts).toEqual([
+      {
+        name: 'relay-1',
+        apiKey: 'sk-one',
+        baseUrl: 'https://relay.example.com/v1'
+      },
+      {
+        name: 'relay-2',
+        apiKey: 'sk-two',
+        baseUrl: 'https://relay.example.com/v1'
+      }
+    ]);
   });
 
   it('keeps preferred account when overwriting an existing account', async () => {

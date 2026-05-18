@@ -1,90 +1,84 @@
 # codex-relay
 
-Lightweight relay account pool management for the official Codex CLI.
+Codex CLI 中转站号池工具。配置一次，之后直接用 `codex-relay` 跑任务；当前 key 余额不足、不可用、限额或中转站异常时，会自动切到下一个 key，并自动恢复上一次中断的 Codex 对话。
 
-`codex-relay` lets you keep multiple relay `apiKey + baseUrl` pairs locally, run Codex through the selected relay, and automatically rotate to another account when the current relay is exhausted or temporarily unusable.
-
-## Requirements
-
-- Node.js `>=22 <23`
-- pnpm for development
-- The official `codex` CLI installed and available on `PATH`
-
-## Install
-
-After the package is published:
+## 1. 安装
 
 ```bash
 npm install -g codex-relay
 ```
 
-For local development:
+要求：
 
-```bash
-pnpm install
-pnpm build
-pnpm dev -- --help
+- Node.js `>=22 <23`
+- 已安装官方 `codex` CLI
+
+## 2. 最无脑配置方式
+
+如果你有一个纯 key 文件，比如 `data.txt`：
+
+```txt
+sk-xxx
+sk-yyy
+sk-zzz
 ```
 
-## Quick Start
-
-Add relay accounts:
+只需要执行：
 
 ```bash
-codex-relay add relay-a --key sk-xxx --base-url https://relay-a.example.com/v1
-codex-relay add relay-b --key sk-yyy --base-url https://relay-b.example.com/v1
+codex-relay setup data.txt --base-url https://你的中转站地址/v1 --name relay
 ```
 
-Run Codex through the managed account pool:
+它会自动生成：
 
-```bash
-codex-relay "help me refactor this project"
+```txt
+relay-1
+relay-2
+relay-3
 ```
 
-Start from a specific account:
+这些账号使用同一个中转站 `baseUrl`，但 key 不同。前面的 key 用不了时，会自动继续切后面的 key。
+
+## 3. 开始使用
 
 ```bash
-codex-relay --account relay-b "continue the previous task"
+codex-relay "帮我完成当前项目"
 ```
 
-## Commands
+指定从某个账号开始：
 
 ```bash
-codex-relay add <name> --key <key> --base-url <url> [--model <model>] [--overwrite]
+codex-relay --account relay-3 "继续刚才的任务"
+```
+
+查看号池：
+
+```bash
 codex-relay list
-codex-relay use <name>
-codex-relay remove <name>
-codex-relay import <file> [--overwrite]
-codex-relay test [name]
-codex-relay [...codexArgs]
 ```
 
-`codex-relay` forwards unknown root arguments to the official `codex` CLI.
+测试号池连通性：
 
-## Import Format
+```bash
+codex-relay test
+```
 
-Text import:
+## 4. 其它导入方式
+
+一行一个中转站账号：
 
 ```txt
 https://relay-a.example.com/v1,sk-xxx,relay-a
 https://relay-b.example.com/v1,sk-yyy,relay-b
 ```
 
-JSON import:
+导入：
 
-```json
-{
-  "accounts": [
-    {
-      "name": "relay-a",
-      "apiKey": "sk-xxx",
-      "baseUrl": "https://relay-a.example.com/v1"
-    }
-  ]
-}
+```bash
+codex-relay import accounts.txt --overwrite
 ```
 
-One relay with multiple keys:
+JSON：
 
 ```json
 {
@@ -92,30 +86,46 @@ One relay with multiple keys:
     {
       "name": "relay-a",
       "baseUrl": "https://relay-a.example.com/v1",
-      "apiKeys": ["sk-xxx", "sk-yyy"]
+      "apiKeys": ["sk-xxx", "sk-yyy", "sk-zzz"]
     }
   ]
 }
 ```
 
-This expands to `relay-a-1`, `relay-a-2`, and so on. If the first key under the same relay is unavailable, rotation continues to the next key.
+导入：
 
-## How Rotation Works
+```bash
+codex-relay import data.json --overwrite
+```
 
-For every managed run, `codex-relay`:
+## 5. 常用命令
 
-1. Reads accounts from `~/.codex-relay/accounts.json`.
-2. Starts `codex` with `OPENAI_API_KEY` set to the selected account key.
-3. Passes `-c openai_base_url="<baseUrl>"` to Codex for that run only.
-4. Watches Codex output for high-confidence quota, balance, auth, and relay failure signals.
-5. Stops the failed process, rotates to the next available account, and starts `codex resume <session-id> Continue`.
-6. Falls back to `codex resume --last Continue` only when no session id is detected.
+```bash
+codex-relay setup <key-file> --base-url <url> [--name relay]
+codex-relay import <file> [--overwrite]
+codex-relay add <name> --key <key> --base-url <url>
+codex-relay list
+codex-relay test [name]
+codex-relay use <name>
+codex-relay remove <name>
+codex-relay [...codex 参数或 prompt]
+```
 
-The user's `~/.codex` config and auth files are not modified.
+## 6. 它怎么自动切号
 
-## Local Data
+每次运行时，工具会：
 
-Runtime data is stored outside the repository:
+1. 读取本机 `~/.codex-relay/accounts.json`
+2. 用当前账号启动官方 `codex`
+3. 注入当前账号的 `OPENAI_API_KEY`
+4. 用 `-c openai_base_url="..."` 临时指定中转站地址
+5. 发现余额不足、quota、401、402、invalid key、部分中转站错误时自动切号
+6. 切号后执行 `codex resume <session-id> Continue`
+7. 没拿到 session id 时才降级 `codex resume --last Continue`
+
+不会改你的 `~/.codex/config.toml`，也不会改官方 Codex 的登录文件。
+
+## 7. 本地数据位置
 
 ```txt
 ~/.codex-relay/
@@ -124,22 +134,21 @@ Runtime data is stored outside the repository:
   logs/
 ```
 
-Secrets such as `data.txt`, `data.json`, `.env*`, and local runtime files are ignored by git.
+`data.txt`、`data.json`、`.env*` 默认不会被提交到 git。
 
-## Development
+## 8. 开发和发布
+
+开发：
 
 ```bash
 pnpm install
 pnpm lint
 pnpm test
 pnpm build
-pnpm pack --dry-run
 ```
 
-This project intentionally uses a small dependency set: TypeScript, commander, zod, strip-ansi, optional node-pty, and vitest.
+配置 GitHub 自动发布到 npm：
 
-## Release
-
-Release automation is based on Conventional Commits and release-please. Merging a release PR creates a GitHub Release. The publish workflow then runs `pnpm publish --provenance --access public`.
-
-For step-by-step setup, read `docs/npm-publish-setup.md`.
+```txt
+docs/npm-publish-setup.md
+```

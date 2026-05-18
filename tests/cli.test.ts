@@ -49,6 +49,33 @@ describe('cli', () => {
     expect(file.accounts[0]?.name).toBe('relay-a');
   });
 
+  it('sets up key-only files with one base url', async () => {
+    const importPath = join(tmpDir, 'keys.txt');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(importPath, 'sk-one\nsk-two\n', 'utf8');
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync([
+      'node',
+      'codex-relay',
+      'setup',
+      importPath,
+      '--base-url',
+      'https://relay.example.com/v1',
+      '--name',
+      'relay'
+    ]);
+
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.accounts.map((account) => account.name)).toEqual(['relay-1', 'relay-2']);
+    expect(output.join('\n')).toContain('Imported 2 accounts');
+    expect(output.join('\n')).toContain('Run: codex-relay');
+  });
+
   it('tests accounts with an injected fetch implementation', async () => {
     const output: string[] = [];
     const fetch = vi.fn(async () => new Response('{}', { status: 200 }));

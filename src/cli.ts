@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import {
   addAccount,
   importAccountsFromFile,
+  importKeyLinesFromFile,
   listAccounts,
   loadAccountsFile,
   removeAccount,
@@ -24,7 +25,7 @@ export interface CliDependencies {
   ) => Promise<SpawnResult>;
 }
 
-const MANAGEMENT_COMMANDS = new Set(['add', 'list', 'remove', 'use', 'import', 'test']);
+const MANAGEMENT_COMMANDS = new Set(['add', 'list', 'remove', 'use', 'import', 'setup', 'test']);
 
 export function createCliProgram(dependencies: CliDependencies = {}): Command {
   const paths = dependencies.paths ?? resolveDataPaths();
@@ -97,6 +98,27 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         await addAccount(paths.accounts, account, { overwrite: Boolean(options.overwrite) });
       }
       output(`Imported ${accounts.length} account${accounts.length === 1 ? '' : 's'}`);
+    });
+
+  program
+    .command('setup')
+    .argument('<file>')
+    .requiredOption('--base-url <url>')
+    .option('--name <prefix>', 'account name prefix')
+    .option('--overwrite', 'overwrite generated account names', true)
+    .action(async (filePath: string, options: { baseUrl: string; name?: string; overwrite?: boolean }) => {
+      const importOptions: { baseUrl: string; namePrefix?: string } = {
+        baseUrl: options.baseUrl
+      };
+      if (options.name) {
+        importOptions.namePrefix = options.name;
+      }
+      const accounts = await importKeyLinesFromFile(filePath, importOptions);
+      for (const account of accounts) {
+        await addAccount(paths.accounts, account, { overwrite: options.overwrite !== false });
+      }
+      output(`Imported ${accounts.length} account${accounts.length === 1 ? '' : 's'}`);
+      output('Run: codex-relay "your task"');
     });
 
   program

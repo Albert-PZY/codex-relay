@@ -100,6 +100,13 @@ export async function importAccountsFromFile(filePath: string): Promise<AccountI
   return importAccountsFromText(await readFile(filePath, 'utf8'));
 }
 
+export async function importKeyLinesFromFile(
+  filePath: string,
+  options: { baseUrl: string; namePrefix?: string }
+): Promise<AccountInput[]> {
+  return importKeyLinesWithBaseUrl(await readFile(filePath, 'utf8'), options);
+}
+
 export function importAccountsFromText(raw: string): AccountInput[] {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -115,6 +122,31 @@ export function importAccountsFromText(raw: string): AccountInput[] {
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#'))
     .map(parseTextImportLine);
+}
+
+export function importKeyLinesWithBaseUrl(
+  raw: string,
+  options: { baseUrl: string; namePrefix?: string }
+): AccountInput[] {
+  const baseUrl = options.baseUrl.trim();
+  if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+    throw new Error('Base URL must start with http:// or https://.');
+  }
+  const namePrefix = options.namePrefix?.trim() || inferName(baseUrl, 0);
+  const keys = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+
+  if (keys.length === 0) {
+    throw new Error('No API keys found in the import file.');
+  }
+
+  return keys.map((apiKey, index) => ({
+    name: `${namePrefix}-${index + 1}`,
+    apiKey: requireNonEmptyKey(apiKey),
+    baseUrl
+  }));
 }
 
 function parseJsonImport(raw: string): AccountInput[] {
