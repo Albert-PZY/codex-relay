@@ -97,8 +97,9 @@ flowchart LR
   Commit[Conventional Commits] --> CI[CI<br>pnpm lint<br>pnpm test<br>pnpm build<br>pnpm pack --dry-run]
   CI --> RP[Release Please]
   RP --> Merge[合并发版 PR]
-  Merge --> Release[GitHub Release]
-  Release --> Publish[npm publish]
+  Merge --> Release[GitHub Release<br>精确版本 tag]
+  Release --> Tags[同步 v主版本<br>同步 v主版本.次版本]
+  Tags --> Publish[npm publish]
   Publish --> Users[全球安装使用]
 ```
 

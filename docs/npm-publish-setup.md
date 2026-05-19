@@ -1,6 +1,6 @@
 # npm 自动发布无脑配置教程
 
-这份教程只需要配置一次。配置完成后，仓库创建 GitHub Release 时会自动发布到 npm。
+这份教程只需要配置一次。配置完成后，合并 Release Please 创建的发版 PR 时，会自动创建 GitHub Release、同步版本 tag，并发布到 npm。
 
 ## 你需要准备什么
 
@@ -52,7 +52,6 @@
 3. 确认能看到这些 workflow：
    - `CI`
    - `Release Please`
-   - `Publish`
 
 ## 第 5 步：以后怎么发布新版本
 
@@ -73,12 +72,18 @@ git commit -m "docs: update readme"
 3. 确认版本号和 changelog 没问题
 4. 合并这个 PR
 
-合并后会自动创建 GitHub Release。GitHub Release 创建后，`Publish` workflow 会自动执行 npm 发布。
+合并后，`Release Please` workflow 会自动：
+
+1. 创建 GitHub Release
+2. 创建精确版本 tag，例如 `v0.2.0`
+3. 同步大版本 tag，例如 `v0`
+4. 同步小版本 tag，例如 `v0.2`
+5. 执行校验并发布到 npm
 
 ## 第 6 步：怎么确认发布成功
 
 1. 打开 GitHub 仓库的 `Actions`
-2. 点击最新的 `Publish` 运行记录
+2. 点击最新的 `Release Please` 运行记录
 3. 看到绿色对勾表示发布成功
 4. 打开 npm 包页面确认版本：
 
@@ -94,7 +99,7 @@ npm install -g codex-relay
 
 ## 常见问题
 
-### Publish 失败，提示 401 或 authentication failed
+### 发布失败，提示 401 或 authentication failed
 
 通常是 `NPM_TOKEN` 配错了。
 
@@ -104,9 +109,9 @@ npm install -g codex-relay
 2. 回到 GitHub `Settings -> Secrets and variables -> Actions`
 3. 删除旧的 `NPM_TOKEN`
 4. 新建同名 `NPM_TOKEN`
-5. 重新运行失败的 `Publish` workflow
+5. 重新运行失败的 `Release Please` workflow
 
-### Publish 失败，提示 package name already exists
+### 发布失败，提示 package name already exists
 
 说明 npm 上已经有人占用了 `codex-relay` 这个包名。
 
