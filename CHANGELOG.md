@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/Albert-PZY/codex-relay/compare/v0.2.1...v0.2.2) (2026-05-19)
+
+
+### Bug Fixes
+
+* keep exec mode when resuming after rotation ([4c23a90](https://github.com/Albert-PZY/codex-relay/commit/4c23a90bf059592d7582b2deb25ec40ed23ce57a))
+* keep exec mode when resuming after rotation ([0573116](https://github.com/Albert-PZY/codex-relay/commit/057311617a5c069fa648a1bcc2066099bec18751))
+
 ## [0.2.1](https://github.com/Albert-PZY/codex-relay/compare/v0.2.0...v0.2.1) (2026-05-19)
 
 
