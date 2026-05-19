@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/Albert-PZY/codex-relay/compare/v0.3.2...v0.3.3) (2026-05-19)
+
+
+### Bug Fixes
+
+* report codex-relay version ([87746ac](https://github.com/Albert-PZY/codex-relay/commit/87746ac03d5e89df2254de8cc17640566ab908a0))
+
 ## [0.3.2](https://github.com/Albert-PZY/codex-relay/compare/v0.3.1...v0.3.2) (2026-05-19)
 
 
