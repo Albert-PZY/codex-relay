@@ -13,6 +13,7 @@ export interface ProcessHandle {
   onData(callback: (chunk: string) => void): void;
   onExit(callback: (exit: { exitCode: number | null; signal: NodeJS.Signals | null }) => void): void;
   kill(): void;
+  write?(chunk: string | Buffer): void;
 }
 
 export interface ProcessAdapter {
@@ -29,6 +30,7 @@ export interface RunnerDependencies {
   adapter?: ProcessAdapter;
   output?: (chunk: string) => void;
   env?: NodeJS.ProcessEnv;
+  input?: NodeJS.ReadStream;
   now?: () => Date;
 }
 
@@ -86,6 +88,7 @@ export async function runManagedCodex(
   const adapter = dependencies.adapter ?? createDefaultProcessAdapter();
   const output = dependencies.output ?? ((chunk: string) => process.stdout.write(chunk));
   const env = dependencies.env ?? process.env;
+  const input = dependencies.input ?? process.stdin;
   const now = dependencies.now ?? (() => new Date());
   const accountsFile = await loadAccountsFile(paths.accounts);
 
@@ -118,6 +121,7 @@ export async function runManagedCodex(
       codexArgs: options.codexArgs,
       ...(options.cwd ? { cwd: options.cwd } : {}),
       env,
+      input,
       output,
       customQuotaPatterns: accountsFile.customQuotaPatterns
     };
@@ -166,6 +170,7 @@ interface RunAttemptArgs {
   codexArgs: string[];
   cwd?: string;
   env: NodeJS.ProcessEnv;
+  input: NodeJS.ReadStream;
   output: (chunk: string) => void;
   customQuotaPatterns: string[];
   resume?: { sessionId?: string; prompt: string };
@@ -185,6 +190,8 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       spawnOptions.cwd = args.cwd;
     }
     const handle = args.adapter.spawn('codex', buildCodexArgs(args.account, args.codexArgs, args.resume), spawnOptions);
+    const forwardInput = (chunk: Buffer | string) => handle.write?.(chunk);
+    args.input.on('data', forwardInput);
 
     handle.onData((chunk) => {
       args.output(chunk);
@@ -204,6 +211,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
         return;
       }
       settled = true;
+      args.input.off('data', forwardInput);
       const failed = exit.exitCode !== 0 && exit.exitCode !== null;
       resolve({
         exitCode: exit.exitCode,
@@ -250,6 +258,10 @@ class PtyProcessHandle implements ProcessHandle {
   kill(): void {
     this.terminal.kill();
   }
+
+  write(chunk: string | Buffer): void {
+    this.terminal.write(chunk.toString());
+  }
 }
 
 function requireNodePty(): NodePtyModule {
@@ -292,5 +304,9 @@ class ChildProcessHandle extends EventEmitter implements ProcessHandle {
 
   kill(): void {
     this.child.kill();
+  }
+
+  write(chunk: string | Buffer): void {
+    this.child.stdin?.write(chunk);
   }
 }
