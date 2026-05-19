@@ -5,7 +5,7 @@
 ## 安装
 
 ```bash
-npm install -g codex-relay
+npm install -g @albert-pzy/codex-relay
 ```
 
 需要先准备好：

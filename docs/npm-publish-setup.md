@@ -6,7 +6,7 @@
 
 - 一个 npm 账号
 - 这个 GitHub 仓库的管理权限
-- 包名 `codex-relay` 在 npm 上可发布
+- npm scope `@albert-pzy` 可以发布公开包
 
 ## 第 1 步：登录 npm
 
@@ -24,7 +24,7 @@
    - `Token name`: `codex-relay-github-actions`
    - `Expiration`: 建议选 90 天、180 天，或按你自己的安全习惯选择
 6. 在权限里选择可以发布 package 的权限：
-   - 如果 npm 页面让你选择包，选择 `codex-relay`
+   - 如果 npm 页面让你选择包，选择 `@albert-pzy/codex-relay`
    - 如果包还没发布，选择允许创建/发布包的权限
 7. 点击生成 token
 8. 复制生成出来的 token
@@ -88,13 +88,13 @@ git commit -m "docs: update readme"
 4. 打开 npm 包页面确认版本：
 
 ```text
-https://www.npmjs.com/package/codex-relay
+https://www.npmjs.com/package/@albert-pzy/codex-relay
 ```
 
 用户之后就可以安装：
 
 ```bash
-npm install -g codex-relay
+npm install -g @albert-pzy/codex-relay
 ```
 
 ## 常见问题
@@ -113,7 +113,7 @@ npm install -g codex-relay
 
 ### 发布失败，提示 package name already exists
 
-说明 npm 上已经有人占用了 `codex-relay` 这个包名。
+说明 npm 上已经有人占用了当前包名。
 
 处理方式：
 

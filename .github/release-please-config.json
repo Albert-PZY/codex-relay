@@ -2,7 +2,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "codex-relay"
+      "package-name": "@albert-pzy/codex-relay"
     }
   },
   "include-component-in-tag": false,
