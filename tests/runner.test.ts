@@ -202,6 +202,43 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('Continue');
   });
 
+  it('keeps non-interactive exec mode when resuming after rotation', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const sessionId = '123e4567-e89b-12d3-a456-426614174000';
+    const adapter = new FakeAdapter([
+      [`session_id: ${sessionId}\n`, 'HTTP 401 invalid api key\n'],
+      ['continued\n']
+    ]);
+
+    await runManagedCodex(
+      { codexArgs: ['exec', '--skip-git-repo-check', 'do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(adapter.spawns[1]?.args).toEqual([
+      '-c',
+      'openai_base_url="https://b.example.com/v1"',
+      'exec',
+      'resume',
+      sessionId,
+      'Continue'
+    ]);
+  });
+
   it('skips accounts whose retry time is still in the future', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
