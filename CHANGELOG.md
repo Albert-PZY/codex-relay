@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/Albert-PZY/codex-relay/compare/v0.2.4...v0.3.0) (2026-05-19)
+
+
+### Features
+
+* track runtime relay health ([fb235f2](https://github.com/Albert-PZY/codex-relay/commit/fb235f2c78ab9a30027b6a2c3cc3d6aea6cd710b))
+* track runtime relay health ([a2828fc](https://github.com/Albert-PZY/codex-relay/commit/a2828fc05e993824eec23348c88162343188c9d3))
+
 ## [0.2.4](https://github.com/Albert-PZY/codex-relay/compare/v0.2.3...v0.2.4) (2026-05-19)
 
 
