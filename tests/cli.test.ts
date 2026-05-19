@@ -328,6 +328,42 @@ describe('cli', () => {
     expect(output.join('\n')).toContain('relay-a FAILED');
   });
 
+  it.each([401, 402, 403])(
+    'prints failed test status when the relay check returns %s',
+    async (status) => {
+      const output: string[] = [];
+      const fetch = vi.fn(async () => new Response('', { status }));
+      const program = createCliProgram({
+        paths: { accounts: accountsPath, state: statePath },
+        output: (text) => output.push(text),
+        fetch
+      });
+
+      await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
+      await program.parseAsync(['node', 'codex-relay', 'test', 'relay-a']);
+
+      expect(output.join('\n')).toContain('relay-a FAILED');
+    }
+  );
+
+  it.each([404, 405, 429, 500, 501, 502, 503, 504])(
+    'prints unknown test status when the relay check returns %s',
+    async (status) => {
+      const output: string[] = [];
+      const fetch = vi.fn(async () => new Response('', { status }));
+      const program = createCliProgram({
+        paths: { accounts: accountsPath, state: statePath },
+        output: (text) => output.push(text),
+        fetch
+      });
+
+      await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
+      await program.parseAsync(['node', 'codex-relay', 'test', 'relay-a']);
+
+      expect(output.join('\n')).toContain('relay-a UNKNOWN');
+    }
+  );
+
   it('throws when testing a missing account', async () => {
     const program = createCliProgram({
       paths: { accounts: accountsPath, state: statePath },

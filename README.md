@@ -68,6 +68,8 @@ codex-relay --account relay-a "继续任务"
 codex-relay "你的任务"
 ```
 
+`codex-relay test` 只是轻量预检：`OK` 表示 `/models` 预检通过，`UNKNOWN` 表示中转站不支持这个接口或暂时无法用它判断，不代表不能正常对话，`FAILED` 才是明确不可连、鉴权失败或额度失败。
+
 本机数据保存在 `~/.codex-relay/`。工具不会修改 `~/.codex/config.toml`，也不会改官方 Codex 的登录文件。
 
 ## 自动切号
