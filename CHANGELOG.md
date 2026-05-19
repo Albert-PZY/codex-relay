@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.3](https://github.com/Albert-PZY/codex-relay/compare/v0.2.2...v0.2.3) (2026-05-19)
+
+
+### Bug Fixes
+
+* forward terminal input to codex process ([7630f30](https://github.com/Albert-PZY/codex-relay/commit/7630f30bda6b374800f3005f787111a89417e99a))
+* forward terminal input to codex process ([0fbad23](https://github.com/Albert-PZY/codex-relay/commit/0fbad23e16a8a8ead8ff761edfc80dcfda576223))
+
 ## [0.2.2](https://github.com/Albert-PZY/codex-relay/compare/v0.2.1...v0.2.2) (2026-05-19)
 
 
