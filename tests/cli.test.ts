@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCliProgram, main } from '../src/cli.js';
 import { loadAccountsFile } from '../src/core/accounts.js';
+import { recordAccountFailure } from '../src/core/health.js';
 
 const promptInput = vi.hoisted(() => vi.fn());
 
@@ -14,6 +15,7 @@ vi.mock('@inquirer/prompts', () => ({
 const tmpDir = fileURLToPath(new URL('./tmp-cli/', import.meta.url));
 const accountsPath = join(tmpDir, 'accounts.json');
 const statePath = join(tmpDir, 'state.json');
+const healthPath = join(tmpDir, 'health.json');
 
 afterEach(async () => {
   await rm(tmpDir, { recursive: true, force: true });
@@ -41,6 +43,25 @@ describe('cli', () => {
     expect(output.join('\n')).toContain('* relay-b');
   });
 
+  it('shows health cooldown status in the account list', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath, health: healthPath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-a',
+      baseUrl: 'https://a.example.com/v1',
+      reason: 'quota',
+      now: new Date('2026-05-19T00:00:00.000Z')
+    });
+    await program.parseAsync(['node', 'codex-relay', 'list']);
+
+    expect(output.join('\n')).toContain('relay-a https://a.example.com/v1 cooldown quota until');
+  });
+
   it('prompts for missing add fields and stores the optional model', async () => {
     promptInput
       .mockResolvedValueOnce('sk-prompt')
@@ -61,6 +82,39 @@ describe('cli', () => {
       baseUrl: 'https://prompt.example.com/v1',
       model: 'gpt-5.2'
     });
+  });
+
+  it('prints account health and retired records', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath, health: healthPath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
+    await program.parseAsync(['node', 'codex-relay', 'add', 'relay-b', '--key', 'sk-b', '--base-url', 'https://b.example.com/v1']);
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-a',
+      baseUrl: 'https://a.example.com/v1',
+      reason: 'quota',
+      now: new Date('2026-05-19T00:00:00.000Z')
+    });
+    await program.parseAsync(['node', 'codex-relay', 'health']);
+
+    expect(output.join('\n')).toContain('relay-a cooldown quota until');
+    expect(output.join('\n')).toContain('relay-b active');
+  });
+
+  it('prints an empty health message when there are no accounts or records', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath, health: healthPath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'health']);
+
+    expect(output).toEqual(['No health records.']);
   });
 
   it('imports accounts from a json file', async () => {

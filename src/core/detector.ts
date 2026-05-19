@@ -1,27 +1,35 @@
 import stripAnsi from 'strip-ansi';
-import type { DetectorMatch } from '../types.js';
+import type { DetectorMatch, HealthFailureReason } from '../types.js';
 
-const HIGH_PATTERNS = [
-  /insufficient\s+balance/i,
-  /余额不足/i,
-  /usage\s+limit\s+exceeded/i,
-  /quota\s+exceeded/i,
-  /您的.*额度.*不足/i,
-  /credit(?:s)?\s+exhausted/i,
-  /payment\s+required/i,
-  /HTTP\s*402/i,
-  /invalid\s+api\s+key/i,
-  /unauthorized/i,
-  /HTTP\s*401/i
+interface DetectionPattern {
+  pattern: RegExp;
+  reason: HealthFailureReason;
+}
+
+const HIGH_PATTERNS: DetectionPattern[] = [
+  { pattern: /insufficient\s+balance/i, reason: 'quota' },
+  { pattern: /余额不足/i, reason: 'quota' },
+  { pattern: /usage\s+limit\s+exceeded/i, reason: 'quota' },
+  { pattern: /quota\s+exceeded/i, reason: 'quota' },
+  { pattern: /您的.*额度.*不足/i, reason: 'quota' },
+  { pattern: /credit(?:s)?\s+exhausted/i, reason: 'quota' },
+  { pattern: /payment\s+required/i, reason: 'quota' },
+  { pattern: /HTTP\s*402/i, reason: 'quota' },
+  { pattern: /invalid\s+api\s+key/i, reason: 'auth' },
+  { pattern: /unauthorized/i, reason: 'auth' },
+  { pattern: /HTTP\s*401/i, reason: 'auth' },
+  { pattern: /HTTP\s*403/i, reason: 'auth' }
 ];
 
-const MEDIUM_PATTERNS = [
-  /rate\s+limit/i,
-  /too\s+many\s+requests/i,
-  /please\s+try\s+again/i,
-  /temporarily\s+unavailable/i,
-  /model.*not.*available/i,
-  /upstream.*error/i
+const MEDIUM_PATTERNS: DetectionPattern[] = [
+  { pattern: /rate\s+limit/i, reason: 'rate_limit' },
+  { pattern: /too\s+many\s+requests/i, reason: 'rate_limit' },
+  { pattern: /HTTP\s*429/i, reason: 'rate_limit' },
+  { pattern: /please\s+try\s+again/i, reason: 'rate_limit' },
+  { pattern: /temporarily\s+unavailable/i, reason: 'server' },
+  { pattern: /model.*not.*available/i, reason: 'server' },
+  { pattern: /upstream.*error/i, reason: 'server' },
+  { pattern: /HTTP\s*50[0-4]/i, reason: 'server' }
 ];
 
 const RETRY_AFTER_SECONDS = /retry\s+after\s+(\d+)\s*s/i;
@@ -34,21 +42,21 @@ export function detectOutput(raw: string, customQuotaPatterns: string[] = []): D
 
   for (const pattern of customQuotaPatterns) {
     if (pattern && output.toLowerCase().includes(pattern.toLowerCase())) {
-      return withRetry({ confidence: 'high', matchedText: pattern }, retryAfterMs);
+      return withRetry({ confidence: 'high', matchedText: pattern, reason: 'quota' }, retryAfterMs);
     }
   }
 
-  for (const pattern of HIGH_PATTERNS) {
+  for (const { pattern, reason } of HIGH_PATTERNS) {
     const match = output.match(pattern);
     if (match?.[0]) {
-      return withRetry({ confidence: 'high', matchedText: match[0] }, retryAfterMs);
+      return withRetry({ confidence: 'high', matchedText: match[0], reason }, retryAfterMs);
     }
   }
 
-  for (const pattern of MEDIUM_PATTERNS) {
+  for (const { pattern, reason } of MEDIUM_PATTERNS) {
     const match = output.match(pattern);
     if (match?.[0]) {
-      return withRetry({ confidence: 'medium', matchedText: match[0] }, retryAfterMs);
+      return withRetry({ confidence: 'medium', matchedText: match[0], reason }, retryAfterMs);
     }
   }
 

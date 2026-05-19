@@ -1,4 +1,5 @@
-import type { AccountsFile, RelayAccount, StateFile } from '../types.js';
+import { isAccountHealthy } from './health.js';
+import type { AccountsFile, HealthFile, RelayAccount, StateFile } from '../types.js';
 
 export function buildRotationOrder(
   accountsFile: AccountsFile,
@@ -21,14 +22,15 @@ export function chooseNextAccount(
   state: StateFile,
   currentAccount?: string,
   now = new Date(),
-  requestedAccount?: string
+  requestedAccount?: string,
+  health?: HealthFile
 ): string | undefined {
   const order = buildRotationOrder(accountsFile, state, requestedAccount);
   if (order.length === 0) {
     return undefined;
   }
 
-  if (currentAccount && isAccountAvailable(currentAccount, state, now)) {
+  if (currentAccount && isAccountAvailable(currentAccount, state, now, health)) {
     return currentAccount;
   }
 
@@ -37,7 +39,7 @@ export function chooseNextAccount(
     ? [...order.slice(startIndex + 1), ...order.slice(0, startIndex + 1)]
     : order;
 
-  return candidates.find((name) => isAccountAvailable(name, state, now));
+  return candidates.find((name) => isAccountAvailable(name, state, now, health));
 }
 
 export function getAccountByName(accountsFile: AccountsFile, name: string): RelayAccount | undefined {
@@ -48,10 +50,10 @@ export function getAccountIndex(accountsFile: AccountsFile, name: string): numbe
   return accountsFile.accounts.findIndex((account) => account.name === name);
 }
 
-export function isAccountAvailable(name: string, state: StateFile, now = new Date()): boolean {
+export function isAccountAvailable(name: string, state: StateFile, now = new Date(), health?: HealthFile): boolean {
   const retry = state.retryAvailability[name];
-  if (!retry) {
-    return true;
+  if (retry && new Date(retry.availableAt).getTime() > now.getTime()) {
+    return false;
   }
-  return new Date(retry.availableAt).getTime() <= now.getTime();
+  return health ? isAccountHealthy(name, health, now) : true;
 }

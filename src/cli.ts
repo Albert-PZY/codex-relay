@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { access } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import {
   addAccount,
   importAccountsFromFile,
@@ -9,13 +10,14 @@ import {
   setPreferredAccount,
   type AccountInput
 } from './core/accounts.js';
+import { loadHealthFile } from './core/health.js';
 import { loadStateFile } from './core/state.js';
 import { runManagedCodex as defaultRunManagedCodex } from './core/runner.js';
 import { resolveDataPaths, type DataPaths } from './utils/paths.js';
-import type { RunnerOptions, SpawnResult } from './types.js';
+import type { AccountHealth, RunnerOptions, SpawnResult } from './types.js';
 
 export interface CliDependencies {
-  paths?: Pick<DataPaths, 'accounts' | 'state'>;
+  paths?: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health'>>;
   output?: (text: string) => void;
   error?: (text: string) => void;
   fetch?: typeof fetch;
@@ -58,6 +60,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async () => {
       const file = await loadAccountsFile(paths.accounts);
       const state = await loadStateFile(paths.state);
+      const health = await loadHealthFile(resolveHealthPath(paths));
       if (file.accounts.length === 0) {
         output('No accounts configured.');
         return;
@@ -65,7 +68,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       for (const account of file.accounts) {
         const marker = account.name === file.preferred ? '*' : ' ';
         const retry = state.retryAvailability[account.name];
-        const status = retry ? `retry at ${retry.displayText}` : 'active';
+        const status = retry ? `retry at ${retry.displayText}` : formatHealthStatus(health.accounts[account.name]);
         output(`${marker} ${account.name} ${account.baseUrl} ${status}`);
       }
     });
@@ -117,6 +120,24 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       for (const account of accounts) {
         const status = await testRelayAccount(account, fetchImpl);
         output(`${account.name} ${status}`);
+      }
+    });
+
+  program
+    .command('health')
+    .action(async () => {
+      const file = await loadAccountsFile(paths.accounts);
+      const health = await loadHealthFile(resolveHealthPath(paths));
+      if (file.accounts.length === 0 && health.retired.length === 0) {
+        output('No health records.');
+        return;
+      }
+
+      for (const account of file.accounts) {
+        output(`${account.name} ${formatHealthStatus(health.accounts[account.name])}`);
+      }
+      for (const retired of health.retired) {
+        output(`${retired.name} retired ${retired.reason} at ${retired.removedAt}`);
       }
     });
 
@@ -234,6 +255,19 @@ function outputImportSummary(
   if (skipped > 0) {
     output(`Skipped ${skipped} duplicate account${skipped === 1 ? '' : 's'}${suffix}`);
   }
+}
+
+function resolveHealthPath(paths: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health'>>): string {
+  return paths.health ?? join(dirname(paths.state), 'health.json');
+}
+
+function formatHealthStatus(health: AccountHealth | undefined): string {
+  if (!health || health.status === 'active') {
+    return 'active';
+  }
+  const reason = health.reason ?? 'unknown';
+  const until = health.cooldownUntil ?? 'unknown';
+  return `cooldown ${reason} until ${until}`;
 }
 
 type RelayTestStatus = 'OK' | 'UNKNOWN' | 'FAILED';

@@ -9,5 +9,6 @@ describe('path utilities', () => {
     expect(paths.root).toBe('C:/tmp/relay');
     expect(paths.accounts).toBe(join('C:/tmp/relay', 'accounts.json'));
     expect(paths.state).toBe(join('C:/tmp/relay', 'state.json'));
+    expect(paths.health).toBe(join('C:/tmp/relay', 'health.json'));
   });
 });

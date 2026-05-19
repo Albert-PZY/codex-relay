@@ -1,13 +1,20 @@
 import { EventEmitter } from 'node:events';
 import { spawn as spawnChild } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { loadAccountsFile } from './accounts.js';
+import { dirname, join } from 'node:path';
+import { loadAccountsFile, saveAccountsFile } from './accounts.js';
 import { detectOutput, extractSessionId } from './detector.js';
+import {
+  loadHealthFile,
+  recordAccountFailure,
+  recordAccountSuccess,
+  retireExpiredHealthAccounts
+} from './health.js';
 import { loadStateFile, markRetryAvailability, updateSuccessfulAccount } from './state.js';
 import { buildRotationOrder, getAccountByName, getAccountIndex, isAccountAvailable } from './rotator.js';
 import { resolveDataPaths, type DataPaths } from '../utils/paths.js';
 import { restoreTerminal } from '../utils/terminal.js';
-import type { RelayAccount, RunnerOptions, SpawnResult } from '../types.js';
+import type { HealthFailureReason, RelayAccount, RunnerOptions, SpawnResult } from '../types.js';
 
 export interface ProcessHandle {
   onData(callback: (chunk: string) => void): void;
@@ -26,7 +33,7 @@ export interface SpawnOptions {
 }
 
 export interface RunnerDependencies {
-  paths?: Pick<DataPaths, 'accounts' | 'state'>;
+  paths?: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health'>>;
   adapter?: ProcessAdapter;
   output?: (chunk: string) => void;
   env?: NodeJS.ProcessEnv;
@@ -40,6 +47,7 @@ interface RunAttemptResult {
   shouldRotate: boolean;
   sessionId?: string;
   retryAfterMs?: number;
+  reason?: HealthFailureReason;
 }
 
 type NodePtyModule = typeof import('node-pty');
@@ -90,13 +98,25 @@ export async function runManagedCodex(
   const env = dependencies.env ?? process.env;
   const input = dependencies.input ?? process.stdin;
   const now = dependencies.now ?? (() => new Date());
-  const accountsFile = await loadAccountsFile(paths.accounts);
+  const healthPath = resolveHealthPath(paths);
+  let accountsFile = await loadAccountsFile(paths.accounts);
 
   if (accountsFile.accounts.length === 0) {
     throw new Error('No relay accounts configured. Put your relay accounts in data.json, then run `codex-relay setup` first.');
   }
 
+  const retirement = await retireExpiredHealthAccounts(healthPath, accountsFile, now());
+  if (retirement.retiredNames.length > 0) {
+    accountsFile = retirement.accountsFile;
+    await saveAccountsFile(paths.accounts, accountsFile);
+  }
+
+  if (accountsFile.accounts.length === 0) {
+    throw new Error('All relay accounts were retired after failing continuously for seven days.');
+  }
+
   let state = await loadStateFile(paths.state);
+  let health = await loadHealthFile(healthPath);
   const rotationOrder = buildRotationOrder(accountsFile, state, options.accountName);
   let sessionId: string | undefined;
   let hasInterruptedSession = false;
@@ -111,7 +131,7 @@ export async function runManagedCodex(
     if (!account) {
       continue;
     }
-    if (!isAccountAvailable(account.name, state, now())) {
+    if (!isAccountAvailable(account.name, state, now(), health)) {
       continue;
     }
 
@@ -136,6 +156,7 @@ export async function runManagedCodex(
     if (!result.shouldRotate) {
       const accountIndex = getAccountIndex(accountsFile, account.name);
       await updateSuccessfulAccount(paths.state, account.name, Math.max(0, accountIndex));
+      await recordAccountSuccess(healthPath, account.name, now());
       restoreTerminal();
       const success: SpawnResult = {
         exitCode: result.exitCode,
@@ -149,9 +170,24 @@ export async function runManagedCodex(
     }
 
     hasInterruptedSession = true;
+    const failureAt = now();
+    health = await recordAccountFailure(healthPath, {
+      accountName: account.name,
+      baseUrl: account.baseUrl,
+      reason: result.reason ?? 'unknown',
+      now: failureAt,
+      ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {})
+    });
+
+    const latestRetirement = await retireExpiredHealthAccounts(healthPath, accountsFile, failureAt);
+    if (latestRetirement.retiredNames.length > 0) {
+      accountsFile = latestRetirement.accountsFile;
+      health = latestRetirement.health;
+      await saveAccountsFile(paths.accounts, accountsFile);
+    }
 
     if (result.retryAfterMs) {
-      const availableAt = new Date(now().getTime() + result.retryAfterMs);
+      const availableAt = new Date(failureAt.getTime() + result.retryAfterMs);
       await markRetryAvailability(paths.state, account.name, {
         displayText: availableAt.toLocaleString(),
         availableAt: availableAt.toISOString()
@@ -162,6 +198,10 @@ export async function runManagedCodex(
 
   restoreTerminal();
   throw new Error('All relay accounts are unavailable or exhausted.');
+}
+
+function resolveHealthPath(paths: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health'>>): string {
+  return paths.health ?? join(dirname(paths.state), 'health.json');
 }
 
 interface RunAttemptArgs {
@@ -183,6 +223,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
     let mediumSignalSeen = false;
     let sessionId: string | undefined;
     let retryAfterMs: number | undefined;
+    let reason: HealthFailureReason | undefined;
     const spawnOptions: SpawnOptions = {
       env: buildCodexEnv(args.account, args.env)
     };
@@ -198,6 +239,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       sessionId = extractSessionId(chunk) ?? sessionId;
       const match = detectOutput(chunk, args.customQuotaPatterns);
       retryAfterMs = match.retryAfterMs ?? retryAfterMs;
+      reason = match.reason ?? reason;
       if (match.confidence === 'high') {
         shouldRotate = true;
         handle.kill();
@@ -218,7 +260,8 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
         signal: exit.signal,
         shouldRotate: shouldRotate || (mediumSignalSeen && failed),
         ...(sessionId ? { sessionId } : {}),
-        ...(retryAfterMs !== undefined ? { retryAfterMs } : {})
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+        ...(reason ? { reason } : {})
       });
     });
   });
