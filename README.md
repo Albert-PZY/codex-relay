@@ -12,6 +12,7 @@ npm install -g codex-relay-cli
 
 - Node.js `>=22 <23`
 - 官方 `codex` CLI
+- 交互式 Codex TUI 需要 `node-pty` 可用；如果你的环境装不上它，请用 `codex-relay exec "任务"` 跑非交互任务
 
 ## 第一次使用
 
@@ -76,6 +77,8 @@ codex-relay "你的任务"
 ## 自动切号
 
 每次启动 Codex 时，工具会给官方 `codex` 子进程注入当前账号的 `OPENAI_API_KEY`，并传入对应的 `openai_base_url`。如果输出里出现余额不足、额度耗尽、401/402、限流或中转站暂不可用等信号，会自动换下一个可用账号。
+
+交互式模式会用 PTY 承载官方 Codex TUI，并自动处理 raw mode、窗口尺寸变化和退出后的终端恢复。缺少 PTY 时，工具不会用普通 stdin/stdout 管道硬跑交互界面，因为那种方式容易出现输入无响应、界面错乱。
 
 能识别到 Codex 会话 id 时，会用 `codex resume <session-id> Continue` 恢复；识别不到时会退回 `codex resume --last Continue`。
 
