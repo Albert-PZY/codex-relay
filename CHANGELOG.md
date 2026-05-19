@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.4](https://github.com/Albert-PZY/codex-relay/compare/v0.2.3...v0.2.4) (2026-05-19)
+
+
+### Bug Fixes
+
+* treat unsupported relay test endpoint as unknown ([61b9081](https://github.com/Albert-PZY/codex-relay/commit/61b90810066cefc4039fdc2ccef33de73fd57b42))
+* treat unsupported relay test endpoint as unknown ([ac299b2](https://github.com/Albert-PZY/codex-relay/commit/ac299b2a3425cb4e187d3440171b41513c54e9e6))
+
 ## [0.2.3](https://github.com/Albert-PZY/codex-relay/compare/v0.2.2...v0.2.3) (2026-05-19)
 
 
