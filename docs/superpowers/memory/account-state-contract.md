@@ -27,6 +27,7 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 
 - `accounts.json` contains `version`, `preferred`, `customQuotaPatterns`, and `accounts`.
 - Each account contains `name`, `apiKey`, `baseUrl`, optional `model`, and `addedAt`.
+- Import files use a top-level JSON array; each item contains `baseUrl`, `apiKey`, optional `name`, and optional `model`.
 - `state.json` contains `version`, `currentIndex`, optional `lastSuccessfulAccount`, `retryAvailability`, and `updatedAt`.
 
 ## Invariants
@@ -34,7 +35,7 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 - Account names are unique.
 - Import-style writes are idempotent: duplicate names and duplicate `baseUrl + apiKey + model` credentials are skipped instead of requiring manual cleanup.
 - Writes are atomic through a temporary file plus rename.
-- `data.txt`, `data.json`, and local runtime data are ignored by git.
+- `data.txt`, `data.json`, `切号工具.md`, and local runtime data are ignored by git.
 
 ## Compatibility Notes
 

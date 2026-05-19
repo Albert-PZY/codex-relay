@@ -22,12 +22,13 @@ The runner keeps output passthrough simple. It watches child output with a conse
 - `codex-relay list` prints account names, relay URLs, default marker, and retry status.
 - `codex-relay remove <name>` removes an account and repairs preferred/default state.
 - `codex-relay use <name>` marks an account as the preferred starting account.
-- `codex-relay import <file>` imports relay accounts from JSON or simple `baseUrl,key[,name]` text rows.
+- `codex-relay import <file>` imports relay accounts from a JSON top-level array of flat account objects.
+- `codex-relay setup [file]` imports `data.json` by default and uses the same JSON-only import path.
 - `codex-relay test [name]` checks one or all accounts through a lightweight OpenAI-compatible `/models` request.
 
 ## Data Contract
 
-`accounts.json` is versioned and contains account records with unique names, API keys, base URLs, optional model names, and timestamps. `state.json` stores the current index, last successful account, exhausted accounts for the current run, retry availability, and updated timestamp. Writes use temporary files plus rename.
+`accounts.json` is versioned and contains account records with unique names, API keys, base URLs, optional model names, and timestamps. `state.json` stores the current index, last successful account, exhausted accounts for the current run, retry availability, and updated timestamp. Writes use temporary files plus rename. Import files are JSON arrays where each item has `baseUrl`, `apiKey`, optional `name`, and optional `model`.
 
 Local files containing secrets are ignored by git: `data.txt`, `data.json`, `.env*`, and local runtime data.
 

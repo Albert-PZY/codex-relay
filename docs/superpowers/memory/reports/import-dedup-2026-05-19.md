@@ -9,7 +9,7 @@
 - Deferred docs: 0
 
 ## Durable updates made
-- Module cards: updated `docs/superpowers/memory/cli-architecture.md` with the shared idempotent merge path for `import`, `setup`, and first-run `data.txt` auto-import.
+- Module cards: updated `docs/superpowers/memory/cli-architecture.md` with the shared idempotent merge path for `import`, `setup`, and first-run `data.json` auto-import.
 - Contracts: updated `docs/superpowers/memory/account-state-contract.md` with the import dedup rule for duplicate names and duplicate relay credentials.
 - Lessons: no standalone lesson doc was needed; the behavior is stable enough as a module/contract note.
 
