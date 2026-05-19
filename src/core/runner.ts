@@ -112,7 +112,7 @@ export async function runManagedCodex(
   }
 
   if (accountsFile.accounts.length === 0) {
-    throw new Error('All relay accounts were retired after failing continuously for seven days.');
+    throw new Error('All relay accounts were retired after failing continuously for ten days.');
   }
 
   let state = await loadStateFile(paths.state);
