@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   verify:
+    name: CI
     runs-on: ubuntu-latest
 
     steps:
