@@ -43,3 +43,11 @@ jobs:
 
       - name: Pack dry run
         run: pnpm pack --dry-run
+
+  required-status:
+    name: verify
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - name: Confirm CI passed
+        run: echo "CI passed"
