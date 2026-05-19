@@ -116,6 +116,28 @@ describe('runner', () => {
     expect(data.join('')).toContain('node-err');
   });
 
+  it('forwards parent input to the node process adapter child stdin', async () => {
+    const adapter = createDefaultProcessAdapter(() => {
+      throw new Error('pty missing');
+    });
+    const handle = adapter.spawn(
+      process.execPath,
+      ['-e', 'process.stdin.once("data", (chunk) => { process.stdout.write("stdin:" + chunk.toString()); process.exit(0) })'],
+      { env: process.env }
+    );
+    const data: string[] = [];
+
+    const exitPromise = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      handle.onData((chunk) => data.push(chunk));
+      handle.onExit(resolve);
+    });
+    handle.write?.('yes\n');
+
+    const exit = await exitPromise;
+    expect(exit.exitCode).toBe(0);
+    expect(data.join('')).toBe('stdin:yes\n');
+  });
+
   it('kills the node process adapter child process', async () => {
     const adapter = createDefaultProcessAdapter(() => {
       throw new Error('pty missing');
