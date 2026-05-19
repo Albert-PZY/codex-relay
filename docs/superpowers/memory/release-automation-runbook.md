@@ -1,0 +1,65 @@
+---
+type: runbook
+title: release-automation-runbook
+summary: Stable release and npm publish rules for codex-relay.
+tags:
+  - release
+  - npm
+  - ci
+owned_paths:
+  - .github/workflows/ci.yml
+  - .github/workflows/release-please.yml
+  - .github/release-please-config.json
+  - package.json
+status: active
+---
+
+# Release Automation Runbook
+
+## Package Identity
+
+- The npm package name is `codex-relay-cli`.
+- The globally installed binary remains `codex-relay`.
+- Do not publish under `@albert-pzy/codex-relay` unless the npm scope exists and the token has publish rights for that scope.
+
+## Required Checks
+
+- The repository ruleset for `main` requires two status contexts: `CI` and `verify`.
+- `.github/workflows/ci.yml` therefore emits the full validation job as `CI` and a lightweight dependent compatibility job as `verify`.
+- Keep both status names unless the GitHub ruleset is changed at the same time.
+
+## Release Flow
+
+1. Merge normal development through a pull request into `main`.
+2. `Release Please` evaluates Conventional Commits and opens a release PR when a version bump is needed.
+3. Merge the release PR after `CI` and `verify` pass.
+4. The main-branch `Release Please` run creates the GitHub Release, publishes to npm, and syncs moving tags `vX` and `vX.Y`.
+
+## Release PR Checks
+
+- Release Please PRs created by GitHub Actions may not automatically trigger PR checks.
+- If a release PR has no checks, push an empty commit to that release branch:
+
+```bash
+git checkout -B <release-please-branch> origin/<release-please-branch>
+git commit --allow-empty -m "chore: trigger release checks"
+git push origin <release-please-branch>
+```
+
+## Verification Commands
+
+After a release, verify:
+
+```bash
+npm view codex-relay-cli name version dist-tags bin --registry=https://registry.npmjs.org
+gh release list --limit 5
+git ls-remote --tags origin
+npm install -g codex-relay-cli@latest --registry=https://registry.npmjs.org
+codex-relay --help
+```
+
+## Known Failure Modes
+
+- `Scope not found` during npm publish means the configured package scope does not exist or the token cannot publish to it.
+- `GitHub Actions is not permitted to create or approve pull requests` means repository Actions settings do not allow workflow-created PRs.
+- A required status check can be "expected" even when tests passed if the job display name does not match the ruleset context.

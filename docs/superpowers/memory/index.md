@@ -16,6 +16,7 @@ status: active
 
 - CLI architecture and runtime boundaries: `docs/superpowers/memory/cli-architecture.md`
 - Account and state file contract: `docs/superpowers/memory/account-state-contract.md`
+- Release automation and npm publish runbook: `docs/superpowers/memory/release-automation-runbook.md`
 
 ## Current Gaps
 
