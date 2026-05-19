@@ -79,7 +79,7 @@ codex-relay "你的任务"
 
 能识别到 Codex 会话 id 时，会用 `codex resume <session-id> Continue` 恢复；识别不到时会退回 `codex resume --last Continue`。
 
-真实切号不依赖 `/models`。工具只根据 Codex 实际对话输出判断 key 是否失败：鉴权失败、额度耗尽、限流、上游异常会写入 `~/.codex-relay/health.json`，冷却中的 key 会被跳过。key 后续真实对话成功一次就自动恢复为可用；如果连续 7 天没有恢复，会自动从号池移除，并保留在 `health.json` 的 retired 记录里。用 `codex-relay health` 可以查看当前状态。
+真实切号不依赖 `/models`。工具只根据 Codex 实际对话输出判断 key 是否失败：鉴权失败、额度耗尽、限流、上游异常会写入 `~/.codex-relay/health.json`，冷却中的 key 会被跳过。key 后续真实对话成功一次就自动恢复为可用；如果连续 10 天没有恢复，会自动从号池移除，并保留在 `health.json` 的 retired 记录里。用 `codex-relay health` 可以查看当前状态。
 
 ## 开发
 

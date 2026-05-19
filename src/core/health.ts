@@ -9,7 +9,7 @@ import type {
   RetiredAccountHealth
 } from '../types.js';
 
-const RETIRE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+const RETIRE_AFTER_MS = 10 * 24 * 60 * 60 * 1000;
 
 const COOLDOWN_MS: Record<HealthFailureReason, number> = {
   auth: RETIRE_AFTER_MS,

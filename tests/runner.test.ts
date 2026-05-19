@@ -504,7 +504,7 @@ describe('runner', () => {
     });
   });
 
-  it('retires accounts that have failed continuously for seven days before running', async () => {
+  it('retires accounts that have failed continuously for ten days before running', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -519,7 +519,7 @@ describe('runner', () => {
       accountName: 'relay-a',
       baseUrl: 'https://a.example.com/v1',
       reason: 'auth',
-      now: new Date('2026-05-12T00:00:00.000Z')
+      now: new Date('2026-05-10T00:00:00.000Z')
     });
 
     const adapter = new FakeAdapter([['ok\n']]);
@@ -530,7 +530,7 @@ describe('runner', () => {
         paths: { accounts: accountsPath, state: statePath, health: healthPath },
         adapter,
         output: () => undefined,
-        now: () => new Date('2026-05-19T00:00:01.000Z')
+        now: () => new Date('2026-05-20T00:00:01.000Z')
       }
     );
 

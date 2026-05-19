@@ -127,12 +127,12 @@ describe('health store', () => {
     expect(health.accounts['relay-a']?.firstFailedAt).toBeUndefined();
   });
 
-  it('retires accounts that have failed continuously for seven days', async () => {
+  it('retires accounts that have failed continuously for ten days', async () => {
     await recordAccountFailure(healthPath, {
       accountName: 'relay-a',
       baseUrl: 'https://a.example.com/v1',
       reason: 'auth',
-      now: new Date('2026-05-12T00:00:00.000Z')
+      now: new Date('2026-05-10T00:00:00.000Z')
     });
     const accountsFile: AccountsFile = {
       version: 1,
@@ -157,7 +157,7 @@ describe('health store', () => {
     const result = await retireExpiredHealthAccounts(
       healthPath,
       accountsFile,
-      new Date('2026-05-19T00:00:01.000Z')
+      new Date('2026-05-20T00:00:01.000Z')
     );
 
     expect(result.retiredNames).toEqual(['relay-a']);
@@ -168,9 +168,40 @@ describe('health store', () => {
       name: 'relay-a',
       baseUrl: 'https://a.example.com/v1',
       reason: 'auth',
-      firstFailedAt: '2026-05-12T00:00:00.000Z',
-      removedAt: '2026-05-19T00:00:01.000Z'
+      firstFailedAt: '2026-05-10T00:00:00.000Z',
+      removedAt: '2026-05-20T00:00:01.000Z'
     });
+  });
+
+  it('keeps accounts that have failed for less than ten days', async () => {
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-a',
+      baseUrl: 'https://a.example.com/v1',
+      reason: 'auth',
+      now: new Date('2026-05-11T00:00:00.000Z')
+    });
+    const accountsFile: AccountsFile = {
+      version: 1,
+      preferred: 'relay-a',
+      customQuotaPatterns: [],
+      accounts: [
+        {
+          name: 'relay-a',
+          apiKey: 'sk-a',
+          baseUrl: 'https://a.example.com/v1',
+          addedAt: '2026-05-10T00:00:00.000Z'
+        }
+      ]
+    };
+
+    const result = await retireExpiredHealthAccounts(
+      healthPath,
+      accountsFile,
+      new Date('2026-05-20T00:00:01.000Z')
+    );
+
+    expect(result.retiredNames).toEqual([]);
+    expect(result.accountsFile.accounts.map((account) => account.name)).toEqual(['relay-a']);
   });
 
   it('keeps accounts when no health record has crossed the retirement window', async () => {
