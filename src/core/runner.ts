@@ -63,6 +63,9 @@ export function buildCodexArgs(
     args.push('-m', account.model);
   }
   if (resume) {
+    if (codexArgs[0] === 'exec') {
+      args.push('exec');
+    }
     args.push('resume');
     if (resume.sessionId) {
       args.push(resume.sessionId);
