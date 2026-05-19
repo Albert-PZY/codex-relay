@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/Albert-PZY/codex-relay/compare/v0.3.0...v0.3.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* extend health retirement window ([8f80aa7](https://github.com/Albert-PZY/codex-relay/commit/8f80aa7dd9e259d5756dadd24f30b216e4db406f))
+* extend health retirement window ([25d4bd8](https://github.com/Albert-PZY/codex-relay/commit/25d4bd880159e91e5872eea8fcd5cf6f67b94d3b))
+
 ## [0.3.0](https://github.com/Albert-PZY/codex-relay/compare/v0.2.4...v0.3.0) (2026-05-19)
 
 
