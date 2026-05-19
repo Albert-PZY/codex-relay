@@ -14,18 +14,41 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
       - uses: googleapis/release-please-action@v4
         id: release
         with:
           config-file: .github/release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      - name: Detect npm publish target
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          RELEASE_TAG="v${PACKAGE_VERSION}"
+
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "ref=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout release commit
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ steps.release.outputs.sha }}
+          ref: ${{ steps.release.outputs.release_created && steps.release.outputs.sha || steps.publish.outputs.ref }}
 
       - name: Sync major and minor tags
         if: ${{ steps.release.outputs.release_created }}
@@ -46,13 +69,13 @@ jobs:
           git push origin "$MAJOR_TAG" "$MINOR_TAG"
 
       - name: Setup pnpm
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
         uses: pnpm/action-setup@v4
         with:
           version: 11.1.0
 
       - name: Setup Node
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
         uses: actions/setup-node@v4
         with:
           node-version: 22.x
@@ -60,11 +83,11 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
         run: pnpm install --frozen-lockfile
 
       - name: Verify package
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
         run: |
           pnpm lint
           pnpm test
@@ -72,7 +95,7 @@ jobs:
           pnpm pack --dry-run
 
       - name: Publish to npm
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
         run: pnpm publish --access public --provenance --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
