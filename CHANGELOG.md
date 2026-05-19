@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/Albert-PZY/codex-relay/compare/v0.3.1...v0.3.2) (2026-05-19)
+
+
+### Bug Fixes
+
+* stabilize interactive codex terminal handling ([188037c](https://github.com/Albert-PZY/codex-relay/commit/188037c719b450dc4e6f53a21ae1cc962cdfc45b))
+
 ## [0.3.1](https://github.com/Albert-PZY/codex-relay/compare/v0.3.0...v0.3.1) (2026-05-19)
 
 
