@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCliProgram, main } from '../src/cli.js';
@@ -24,6 +24,39 @@ afterEach(async () => {
 });
 
 describe('cli', () => {
+  it('prints the codex-relay version without launching codex', async () => {
+    const output: string[] = [];
+    const runManagedCodex = vi.fn(async () => ({
+      exitCode: 0,
+      signal: null,
+      usedAccount: 'relay-a'
+    }));
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: (text) => output.push(text),
+      runManagedCodex
+    });
+
+    await expect(program.parseAsync(['node', 'codex-relay', '--version'])).rejects.toMatchObject({
+      code: 'commander.version'
+    });
+
+    expect(output).toEqual([await readPackageVersion()]);
+    expect(runManagedCodex).not.toHaveBeenCalled();
+  });
+
+  it('prints the codex-relay version through the version command', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'version']);
+
+    expect(output).toEqual([await readPackageVersion()]);
+  });
+
   it('adds, lists, uses, and removes accounts', async () => {
     const output: string[] = [];
     const program = createCliProgram({
@@ -607,3 +640,9 @@ describe('cli', () => {
     expect(errors).toEqual([]);
   });
 });
+
+async function readPackageVersion(): Promise<string> {
+  const manifestText = await readFile(new URL('../package.json', import.meta.url), 'utf8');
+  const manifest = JSON.parse(manifestText) as { version?: unknown };
+  return typeof manifest.version === 'string' ? manifest.version : '0.0.0';
+}
