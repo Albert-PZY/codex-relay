@@ -1,5 +1,5 @@
 {
-  "name": "@albert-pzy/codex-relay",
+  "name": "codex-relay-cli",
   "version": "0.2.0",
   "description": "Lightweight relay account pool manager for the Codex CLI.",
   "type": "module",

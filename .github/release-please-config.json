@@ -2,7 +2,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "@albert-pzy/codex-relay"
+      "package-name": "codex-relay-cli"
     }
   },
   "include-component-in-tag": false,
