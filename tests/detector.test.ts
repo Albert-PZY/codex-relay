@@ -4,16 +4,33 @@ import { detectOutput, extractSessionId } from '../src/core/detector.js';
 describe('quota detector', () => {
   it('detects high-confidence quota signals', () => {
     expect(detectOutput('Error: insufficient balance')).toMatchObject({
-      confidence: 'high'
+      confidence: 'high',
+      reason: 'quota'
     });
     expect(detectOutput('\u001b[31m余额不足\u001b[0m')).toMatchObject({
-      confidence: 'high'
+      confidence: 'high',
+      reason: 'quota'
+    });
+  });
+
+  it('classifies auth failures separately from quota failures', () => {
+    expect(detectOutput('HTTP 401 invalid api key')).toMatchObject({
+      confidence: 'high',
+      reason: 'auth'
     });
   });
 
   it('detects medium-confidence rate-limit signals', () => {
     expect(detectOutput('Too many requests, please try again later')).toMatchObject({
-      confidence: 'medium'
+      confidence: 'medium',
+      reason: 'rate_limit'
+    });
+  });
+
+  it('classifies temporary upstream errors as server failures', () => {
+    expect(detectOutput('upstream error: temporarily unavailable')).toMatchObject({
+      confidence: 'medium',
+      reason: 'server'
     });
   });
 
@@ -33,7 +50,8 @@ describe('quota detector', () => {
   it('supports custom quota patterns', () => {
     expect(detectOutput('balance depleted', ['balance depleted'])).toMatchObject({
       confidence: 'high',
-      matchedText: 'balance depleted'
+      matchedText: 'balance depleted',
+      reason: 'quota'
     });
   });
 

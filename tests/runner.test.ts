@@ -4,6 +4,7 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addAccount } from '../src/core/accounts.js';
+import { loadHealthFile, recordAccountFailure } from '../src/core/health.js';
 import { markRetryAvailability } from '../src/core/state.js';
 import {
   buildCodexArgs,
@@ -18,6 +19,7 @@ import type { RelayAccount } from '../src/types.js';
 const tmpDir = fileURLToPath(new URL('./tmp-runner/', import.meta.url));
 const accountsPath = join(tmpDir, 'accounts.json');
 const statePath = join(tmpDir, 'state.json');
+const healthPath = join(tmpDir, 'health.json');
 
 afterEach(async () => {
   await rm(tmpDir, { recursive: true, force: true });
@@ -426,6 +428,118 @@ describe('runner', () => {
     const { loadStateFile } = await import('../src/core/state.js');
     const state = await loadStateFile(statePath);
     expect(state.retryAvailability['relay-a']?.availableAt).toBe('2026-05-19T00:00:30.000Z');
+    const health = await loadHealthFile(healthPath);
+    expect(health.accounts['relay-a']).toMatchObject({
+      status: 'cooldown',
+      reason: 'quota',
+      cooldownUntil: '2026-05-19T00:00:30.000Z',
+      consecutiveFailures: 1
+    });
+  });
+
+  it('skips accounts cooling down in health state', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-a',
+      baseUrl: 'https://a.example.com/v1',
+      reason: 'quota',
+      now: new Date('2026-05-19T00:00:00.000Z')
+    });
+
+    const adapter = new FakeAdapter([['ok\n']]);
+
+    const result = await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, health: healthPath },
+        adapter,
+        output: () => undefined,
+        now: () => new Date('2026-05-19T01:00:00.000Z')
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-b');
+  });
+
+  it('marks a successful account as active in health state', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-a',
+      baseUrl: 'https://a.example.com/v1',
+      reason: 'server',
+      now: new Date('2026-05-19T00:00:00.000Z')
+    });
+
+    const adapter = new FakeAdapter([['ok\n']]);
+
+    await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, health: healthPath },
+        adapter,
+        output: () => undefined,
+        now: () => new Date('2026-05-19T00:02:00.000Z')
+      }
+    );
+
+    const health = await loadHealthFile(healthPath);
+    expect(health.accounts['relay-a']).toMatchObject({
+      status: 'active',
+      consecutiveFailures: 0,
+      lastSuccessAt: '2026-05-19T00:02:00.000Z'
+    });
+  });
+
+  it('retires accounts that have failed continuously for seven days before running', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-a',
+      baseUrl: 'https://a.example.com/v1',
+      reason: 'auth',
+      now: new Date('2026-05-12T00:00:00.000Z')
+    });
+
+    const adapter = new FakeAdapter([['ok\n']]);
+
+    const result = await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, health: healthPath },
+        adapter,
+        output: () => undefined,
+        now: () => new Date('2026-05-19T00:00:01.000Z')
+      }
+    );
+
+    const { loadAccountsFile } = await import('../src/core/accounts.js');
+    const accountsFile = await loadAccountsFile(accountsPath);
+    const health = await loadHealthFile(healthPath);
+    expect(result.usedAccount).toBe('relay-b');
+    expect(accountsFile.accounts.map((account) => account.name)).toEqual(['relay-b']);
+    expect(health.retired.map((account) => account.name)).toEqual(['relay-a']);
   });
 
   it('fails clearly when every account is exhausted', async () => {

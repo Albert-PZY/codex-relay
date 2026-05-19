@@ -61,6 +61,7 @@ codex-relay setup ./my-relays.json        # 导入指定 JSON 文件
 codex-relay import ./my-relays.json       # 同样导入 JSON 文件
 codex-relay add relay-a --key <key> --base-url <url>
 codex-relay list
+codex-relay health
 codex-relay test
 codex-relay use <name>
 codex-relay remove <name>
@@ -77,6 +78,8 @@ codex-relay "你的任务"
 每次启动 Codex 时，工具会给官方 `codex` 子进程注入当前账号的 `OPENAI_API_KEY`，并传入对应的 `openai_base_url`。如果输出里出现余额不足、额度耗尽、401/402、限流或中转站暂不可用等信号，会自动换下一个可用账号。
 
 能识别到 Codex 会话 id 时，会用 `codex resume <session-id> Continue` 恢复；识别不到时会退回 `codex resume --last Continue`。
+
+真实切号不依赖 `/models`。工具只根据 Codex 实际对话输出判断 key 是否失败：鉴权失败、额度耗尽、限流、上游异常会写入 `~/.codex-relay/health.json`，冷却中的 key 会被跳过。key 后续真实对话成功一次就自动恢复为可用；如果连续 7 天没有恢复，会自动从号池移除，并保留在 `health.json` 的 retired 记录里。用 `codex-relay health` 可以查看当前状态。
 
 ## 开发
 

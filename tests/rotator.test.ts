@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AccountsFile, StateFile } from '../src/types.js';
+import type { AccountsFile, HealthFile, StateFile } from '../src/types.js';
 import { chooseNextAccount, buildRotationOrder, isAccountAvailable } from '../src/core/rotator.js';
 
 const accounts: AccountsFile = {
@@ -113,6 +113,34 @@ describe('rotation', () => {
     };
 
     expect(chooseNextAccount(accounts, state, 'relay-b', new Date('2026-05-19T00:00:00.000Z'))).toBe(
+      'relay-c'
+    );
+  });
+
+  it('skips accounts that are cooling down in health state', () => {
+    const state: StateFile = {
+      version: 1,
+      currentIndex: 0,
+      retryAvailability: {},
+      updatedAt: '2026-05-18T00:00:00.000Z'
+    };
+    const health: HealthFile = {
+      version: 1,
+      accounts: {
+        'relay-b': {
+          status: 'cooldown',
+          reason: 'quota',
+          firstFailedAt: '2026-05-18T00:00:00.000Z',
+          lastFailedAt: '2026-05-18T00:00:00.000Z',
+          cooldownUntil: '2026-05-19T01:00:00.000Z',
+          consecutiveFailures: 1
+        }
+      },
+      retired: [],
+      updatedAt: '2026-05-18T00:00:00.000Z'
+    };
+
+    expect(chooseNextAccount(accounts, state, 'relay-b', new Date('2026-05-19T00:00:00.000Z'), undefined, health)).toBe(
       'relay-c'
     );
   });
