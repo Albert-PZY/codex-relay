@@ -115,8 +115,8 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         throw new Error(`Account "${name}" does not exist.`);
       }
       for (const account of accounts) {
-        const ok = await testRelayAccount(account, fetchImpl);
-        output(`${account.name} ${ok ? 'OK' : 'FAILED'}`);
+        const status = await testRelayAccount(account, fetchImpl);
+        output(`${account.name} ${status}`);
       }
     });
 
@@ -236,7 +236,9 @@ function outputImportSummary(
   }
 }
 
-async function testRelayAccount(account: Pick<AccountInput, 'apiKey' | 'baseUrl'>, fetchImpl: typeof fetch): Promise<boolean> {
+type RelayTestStatus = 'OK' | 'UNKNOWN' | 'FAILED';
+
+async function testRelayAccount(account: Pick<AccountInput, 'apiKey' | 'baseUrl'>, fetchImpl: typeof fetch): Promise<RelayTestStatus> {
   const endpoint = `${account.baseUrl.replace(/\/+$/, '')}/models`;
   try {
     const response = await fetchImpl(endpoint, {
@@ -244,9 +246,18 @@ async function testRelayAccount(account: Pick<AccountInput, 'apiKey' | 'baseUrl'
         Authorization: `Bearer ${account.apiKey}`
       }
     });
-    return response.ok;
+    if (response.ok) {
+      return 'OK';
+    }
+    if ([401, 402, 403].includes(response.status)) {
+      return 'FAILED';
+    }
+    if ([404, 405, 429, 500, 501, 502, 503, 504].includes(response.status)) {
+      return 'UNKNOWN';
+    }
+    return 'FAILED';
   } catch {
-    return false;
+    return 'FAILED';
   }
 }
 
