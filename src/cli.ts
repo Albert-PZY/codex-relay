@@ -30,6 +30,7 @@ export interface CliDependencies {
 export function createCliProgram(dependencies: CliDependencies = {}): Command {
   const paths = dependencies.paths ?? resolveDataPaths();
   const output = dependencies.output ?? ((text: string) => console.log(text));
+  const rawOutput = dependencies.output ?? ((text: string) => process.stdout.write(text));
   const error = dependencies.error ?? ((text: string) => console.error(text));
   const fetchImpl = dependencies.fetch ?? fetch;
   const runManagedCodex = dependencies.runManagedCodex ?? defaultRunManagedCodex;
@@ -152,7 +153,8 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     }
     const result = await runManagedCodex(runnerOptions, {
       paths,
-      output
+      output: rawOutput,
+      outputStream: process.stdout
     });
     if (result.exitCode && result.exitCode !== 0) {
       process.exitCode = result.exitCode;
