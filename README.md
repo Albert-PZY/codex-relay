@@ -76,16 +76,6 @@ codex-relay "你的任务"
 
 能识别到 Codex 会话 id 时，会用 `codex resume <session-id> Continue` 恢复；识别不到时会退回 `codex resume --last Continue`。
 
-## 发布到 npm
-
-仓库已经配置了 GitHub Actions 自动发布。只需要配置一次：
-
-1. 登录 npm，创建一个能发布 `codex-relay` 的 Access Token。
-2. 打开 GitHub 仓库 `Settings -> Secrets and variables -> Actions`。
-3. 新建仓库 secret，名字填 `NPM_TOKEN`，内容粘贴 npm token。
-4. 后续按 Conventional Commits 提交，例如 `feat: add json import` 或 `fix: handle quota rotation`。
-5. 推送到 `main` 后，Release Please 会创建发版 PR；合并该 PR 后会自动发布到 npm。
-
 ## 开发
 
 ```bash
