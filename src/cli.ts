@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { access } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import {
   addAccount,
@@ -39,9 +40,17 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   program
     .name('codex-relay')
     .description('Relay account pool manager for the Codex CLI')
+    .version(getPackageVersion(), '-v, --version', 'display codex-relay version')
     .allowUnknownOption(true)
     .allowExcessArguments(true)
     .exitOverride();
+
+  program
+    .command('version')
+    .description('Show the codex-relay version')
+    .action(() => {
+      output(getPackageVersion());
+    });
 
   program
     .command('add')
@@ -174,11 +183,17 @@ export async function main(argv: string[] = []): Promise<void> {
   try {
     await program.parseAsync(['node', 'codex-relay', ...argv]);
   } catch (error) {
-    if (isCommanderHelpExit(error)) {
+    if (isCommanderDisplayExit(error)) {
       return;
     }
     throw error;
   }
+}
+
+function getPackageVersion(): string {
+  const require = createRequire(import.meta.url);
+  const manifest = require('../package.json') as { version?: unknown };
+  return typeof manifest.version === 'string' ? manifest.version : '0.0.0';
 }
 
 async function resolveAccountInput(
@@ -297,9 +312,9 @@ async function testRelayAccount(account: Pick<AccountInput, 'apiKey' | 'baseUrl'
   }
 }
 
-function isCommanderHelpExit(error: unknown): boolean {
+function isCommanderDisplayExit(error: unknown): boolean {
   return typeof error === 'object' &&
     error !== null &&
     'code' in error &&
-    error.code === 'commander.helpDisplayed';
+    ['commander.helpDisplayed', 'commander.version'].includes(String(error.code));
 }
