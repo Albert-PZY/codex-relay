@@ -1,17 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { rm, readFile } from 'node:fs/promises';
+import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   addAccount,
   addAccounts,
-  importAccountsFromText,
-  importKeyLinesWithBaseUrl,
-  importSetupAccountsFromText,
+  importAccountsFromFile,
   mergeImportedAccounts,
   listAccounts,
   loadAccountsFile,
   removeAccount,
+  saveAccountsFile,
   setPreferredAccount
 } from '../src/core/accounts.js';
 
@@ -151,6 +150,28 @@ describe('account store', () => {
     expect(file.accounts.map((account) => account.name)).toEqual(['relay-a', 'relay-d']);
   });
 
+  it('treats the same relay key with a different model as a different credential', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-same',
+      baseUrl: 'https://same.example.com/v1',
+      model: 'gpt-5.1-codex'
+    });
+
+    const imported = await mergeImportedAccounts(accountsPath, [
+      {
+        apiKey: 'sk-same',
+        baseUrl: 'https://same.example.com/v1',
+        model: 'gpt-5.2'
+      }
+    ]);
+
+    expect(imported[0]).toMatchObject({
+      name: 'same-example-com-1',
+      model: 'gpt-5.2'
+    });
+  });
+
   it('validates URLs and keys', async () => {
     await expect(
       addAccount(accountsPath, {
@@ -180,191 +201,241 @@ describe('account store', () => {
     expect(file.preferred).toBe('relay-b');
   });
 
-  it('parses json and text imports', () => {
-    const json = importAccountsFromText(
+  it('imports accounts from a top-level json array', async () => {
+    const importPath = join(tmpDir, 'data.json');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      importPath,
+      JSON.stringify([
+        {
+          name: 'relay-a',
+          apiKey: 'sk-a',
+          baseUrl: 'https://a.example.com/v1',
+          model: 'gpt-5.1-codex'
+        },
+        {
+          apiKey: 'sk-b',
+          baseUrl: 'https://b.example.com/v1'
+        }
+      ]),
+      'utf8'
+    );
+
+    const accounts = await importAccountsFromFile(importPath);
+
+    expect(accounts).toEqual([
+      {
+        name: 'relay-a',
+        apiKey: 'sk-a',
+        baseUrl: 'https://a.example.com/v1',
+        model: 'gpt-5.1-codex'
+      },
+      {
+        apiKey: 'sk-b',
+        baseUrl: 'https://b.example.com/v1'
+      }
+    ]);
+  });
+
+  it('generates non-conflicting names for nameless imported accounts', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-example-com-1',
+      apiKey: 'sk-existing',
+      baseUrl: 'https://relay.example.com/v1'
+    });
+
+    const imported = await mergeImportedAccounts(accountsPath, [
+      {
+        apiKey: 'sk-a',
+        baseUrl: 'https://relay.example.com/v1'
+      },
+      {
+        apiKey: 'sk-b',
+        baseUrl: 'https://relay.example.com/v1'
+      }
+    ]);
+
+    expect(imported.map((account) => account.name)).toEqual([
+      'relay-example-com-2',
+      'relay-example-com-3'
+    ]);
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.accounts.map((account) => account.name)).toEqual([
+      'relay-example-com-1',
+      'relay-example-com-2',
+      'relay-example-com-3'
+    ]);
+  });
+
+  it('rejects wrapped import objects in favor of top-level arrays', async () => {
+    const importPath = join(tmpDir, 'wrapped.json');
+    await rm(tmpDir, { recursive: true, force: true });
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      importPath,
       JSON.stringify({
         accounts: [
           {
-            name: 'relay-json',
-            apiKey: 'sk-json',
-            baseUrl: 'https://json.example.com/v1'
+            baseUrl: 'https://relay.example.com/v1',
+            apiKey: 'sk-a'
           }
         ]
-      })
-    );
-    const text = importAccountsFromText('https://text.example.com/v1,sk-text,relay-text');
-
-    expect(json[0]?.name).toBe('relay-json');
-    expect(text[0]).toMatchObject({
-      name: 'relay-text',
-      apiKey: 'sk-text',
-      baseUrl: 'https://text.example.com/v1'
-    });
-  });
-
-  it('expands relay pools with multiple keys per base url', () => {
-    const accounts = importAccountsFromText(
-      JSON.stringify({
-        relays: [
-          {
-            name: 'relay-a',
-            baseUrl: 'https://relay-a.example.com/v1',
-            apiKeys: ['sk-a1', 'sk-a2']
-          },
-          {
-            name: 'relay-b',
-            baseUrl: 'https://relay-b.example.com/v1',
-            keys: ['sk-b1']
-          }
-        ]
-      })
+      }),
+      'utf8'
     );
 
-    expect(accounts).toEqual([
-      {
-        name: 'relay-a-1',
-        apiKey: 'sk-a1',
-        baseUrl: 'https://relay-a.example.com/v1'
-      },
-      {
-        name: 'relay-a-2',
-        apiKey: 'sk-a2',
-        baseUrl: 'https://relay-a.example.com/v1'
-      },
-      {
-        name: 'relay-b-1',
-        apiKey: 'sk-b1',
-        baseUrl: 'https://relay-b.example.com/v1'
-      }
-    ]);
+    await expect(importAccountsFromFile(importPath)).rejects.toThrow(/top-level array/i);
   });
 
-  it('parses direct json arrays and pools field', () => {
-    const direct = importAccountsFromText(
+  it('rejects non-json import files', async () => {
+    const importPath = join(tmpDir, 'data.txt');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(importPath, 'https://text.example.com/v1,sk-text,relay-text\n', 'utf8');
+
+    await expect(importAccountsFromFile(importPath)).rejects.toThrow(/valid JSON/i);
+  });
+
+  it('rejects nested key-pool json shapes', async () => {
+    const importPath = join(tmpDir, 'nested.json');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      importPath,
       JSON.stringify([
         {
-          name: 'direct',
-          apiKey: 'sk-direct',
-          baseUrl: 'https://direct.example.com/v1'
+          name: 'relay-a',
+          baseUrl: 'https://relay-a.example.com/v1',
+          keys: ['sk-a1', 'sk-a2']
         }
-      ])
+      ]),
+      'utf8'
     );
-    const pools = importAccountsFromText(
+
+    await expect(importAccountsFromFile(importPath)).rejects.toThrow(/invalid import file/i);
+  });
+
+  it('rejects invalid json account records', async () => {
+    const importPath = join(tmpDir, 'invalid.json');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      importPath,
+      JSON.stringify([
+        {
+          name: '',
+          apiKey: '',
+          baseUrl: 'not-a-url'
+        }
+      ]),
+      'utf8'
+    );
+
+    await expect(importAccountsFromFile(importPath)).rejects.toThrow(/invalid import file/i);
+  });
+
+  it('rejects duplicate names already stored in accounts json', async () => {
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      accountsPath,
       JSON.stringify({
-        pools: [
+        version: 1,
+        customQuotaPatterns: [],
+        accounts: [
           {
-            name: 'pool',
-            baseUrl: 'https://pool.example.com/v1',
-            keys: ['sk-pool']
+            name: 'relay-a',
+            apiKey: 'sk-a',
+            baseUrl: 'https://a.example.com/v1',
+            addedAt: '2026-05-18T00:00:00.000Z'
+          },
+          {
+            name: 'relay-a',
+            apiKey: 'sk-b',
+            baseUrl: 'https://b.example.com/v1',
+            addedAt: '2026-05-18T00:00:00.000Z'
           }
         ]
-      })
+      }),
+      'utf8'
     );
 
-    expect(direct[0]?.name).toBe('direct');
-    expect(pools[0]).toMatchObject({
-      name: 'pool-1',
-      apiKey: 'sk-pool',
-      baseUrl: 'https://pool.example.com/v1'
-    });
+    await expect(loadAccountsFile(accountsPath)).rejects.toThrow(/duplicate account/i);
   });
 
-  it('rejects relay pools with empty key arrays', () => {
-    expect(() =>
-      importAccountsFromText(
-        JSON.stringify({
-          relays: [
-            {
-              name: 'empty',
-              baseUrl: 'https://empty.example.com/v1',
-              keys: []
-            }
-          ]
-        })
-      )
-    ).toThrow(/key/i);
-  });
-
-  it('rejects key-only text imports because base url is required', () => {
-    expect(() => importAccountsFromText('sk-key-without-base-url')).toThrow(/base url/i);
-  });
-
-  it('turns key-only files into accounts when a base url is provided', () => {
-    const accounts = importKeyLinesWithBaseUrl('sk-one\nsk-two\n', {
-      baseUrl: 'https://relay.example.com/v1',
-      namePrefix: 'relay'
-    });
-
-    expect(accounts).toEqual([
-      {
-        name: 'relay-1',
-        apiKey: 'sk-one',
-        baseUrl: 'https://relay.example.com/v1'
-      },
-      {
-        name: 'relay-2',
-        apiKey: 'sk-two',
-        baseUrl: 'https://relay.example.com/v1'
-      }
-    ]);
-  });
-
-  it('parses segmented data files with base_url lines and multiple keys', () => {
-    const accounts = importSetupAccountsFromText(`
-base_url = "https://relay-a.example.com/v1"
-sk-a1
-sk-a2
-
-----------------
-base_url = "https://relay-b.example.com/v1"
-sk-b1
-`, {});
-
-    expect(accounts).toEqual([
-      {
-        name: 'relay-a-example-com-1',
-        apiKey: 'sk-a1',
-        baseUrl: 'https://relay-a.example.com/v1'
-      },
-      {
-        name: 'relay-a-example-com-2',
-        apiKey: 'sk-a2',
-        baseUrl: 'https://relay-a.example.com/v1'
-      },
-      {
-        name: 'relay-b-example-com-1',
-        apiKey: 'sk-b1',
-        baseUrl: 'https://relay-b.example.com/v1'
-      }
-    ]);
-  });
-
-  it('uses one generated name prefix across segmented setup files', () => {
-    const accounts = importSetupAccountsFromText(
-      'base_url = "https://relay-a.example.com/v1"\nsk-a1\nbase_url = "https://relay-b.example.com/v1"\nsk-b1\n',
-      { namePrefix: 'relay' }
+  it('rejects malformed stored accounts json', async () => {
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      accountsPath,
+      JSON.stringify({
+        version: 1,
+        customQuotaPatterns: [],
+        accounts: [
+          {
+            name: 'relay-a',
+            apiKey: '',
+            baseUrl: 'not-a-url',
+            addedAt: 'not-a-date'
+          }
+        ]
+      }),
+      'utf8'
     );
 
-    expect(accounts.map((account) => account.name)).toEqual(['relay-1', 'relay-2']);
+    await expect(loadAccountsFile(accountsPath)).rejects.toThrow(/invalid accounts file/i);
   });
 
-  it('ignores visual separator lines in key-only setup files', () => {
-    const accounts = importKeyLinesWithBaseUrl('sk-one\n——————————————————\nsk-two\n', {
-      baseUrl: 'https://relay.example.com/v1',
-      namePrefix: 'relay'
+  it('removes preferred account when the store becomes empty', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
     });
 
-    expect(accounts.map((account) => account.apiKey)).toEqual(['sk-one', 'sk-two']);
+    await removeAccount(accountsPath, 'relay-a');
+
+    const file = await loadAccountsFile(accountsPath);
+    expect(file.accounts).toEqual([]);
+    expect(file.preferred).toBeUndefined();
   });
 
-  it('accepts a plain base url line before keys in setup files', () => {
-    const accounts = importSetupAccountsFromText('https://relay.example.com/v1\nsk-one\nsk-two\n', {});
+  it('returns no candidates from an empty json array', async () => {
+    const importPath = join(tmpDir, 'empty.json');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(importPath, '[]', 'utf8');
 
-    expect(accounts.map((account) => account.name)).toEqual(['relay-example-com-1', 'relay-example-com-2']);
-    expect(accounts.map((account) => account.baseUrl)).toEqual([
-      'https://relay.example.com/v1',
-      'https://relay.example.com/v1'
+    await expect(importAccountsFromFile(importPath)).resolves.toEqual([]);
+  });
+
+  it('returns no imported accounts when every candidate is already present', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+
+    const imported = await mergeImportedAccounts(accountsPath, [
+      {
+        name: 'relay-a',
+        apiKey: 'sk-a',
+        baseUrl: 'https://a.example.com/v1'
+      }
     ]);
+
+    expect(imported).toEqual([]);
+  });
+
+  it('keeps existing preferred account when saving a file with an invalid preferred value', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    const file = await loadAccountsFile(accountsPath);
+
+    await saveAccountsFile(accountsPath, {
+      ...file,
+      preferred: 'missing'
+    });
+
+    const saved = await loadAccountsFile(accountsPath);
+    expect(saved.preferred).toBe('relay-a');
   });
 
   it('keeps preferred account when overwriting an existing account', async () => {

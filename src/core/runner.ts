@@ -40,6 +40,9 @@ interface RunAttemptResult {
   retryAfterMs?: number;
 }
 
+type NodePtyModule = typeof import('node-pty');
+type NodePtyLoader = () => NodePtyModule;
+
 export function buildCodexEnv(
   account: RelayAccount,
   baseEnv: NodeJS.ProcessEnv = process.env
@@ -84,7 +87,7 @@ export async function runManagedCodex(
   const accountsFile = await loadAccountsFile(paths.accounts);
 
   if (accountsFile.accounts.length === 0) {
-    throw new Error('No relay accounts configured. Put your relay keys in data.txt, then run `codex-relay setup` first.');
+    throw new Error('No relay accounts configured. Put your relay accounts in data.json, then run `codex-relay setup` first.');
   }
 
   let state = await loadStateFile(paths.state);
@@ -210,20 +213,16 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
   });
 }
 
-export function createDefaultProcessAdapter(): ProcessAdapter {
+export function createDefaultProcessAdapter(loadPty: NodePtyLoader = requireNodePty): ProcessAdapter {
   try {
-    return new PtyProcessAdapter();
+    return new PtyProcessAdapter(loadPty());
   } catch {
     return new NodeProcessAdapter();
   }
 }
 
 class PtyProcessAdapter implements ProcessAdapter {
-  private readonly ptyModule: typeof import('node-pty');
-
-  constructor() {
-    this.ptyModule = requireNodePty();
-  }
+  constructor(private readonly ptyModule: NodePtyModule) {}
 
   spawn(command: string, args: string[], options: SpawnOptions): ProcessHandle {
     const terminal = this.ptyModule.spawn(command, args, {
@@ -250,7 +249,7 @@ class PtyProcessHandle implements ProcessHandle {
   }
 }
 
-function requireNodePty(): typeof import('node-pty') {
+function requireNodePty(): NodePtyModule {
   const require = createRequire(import.meta.url);
   return require('node-pty') as typeof import('node-pty');
 }

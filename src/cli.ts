@@ -3,7 +3,6 @@ import { access } from 'node:fs/promises';
 import {
   addAccount,
   importAccountsFromFile,
-  importSetupAccountsFromFile,
   loadAccountsFile,
   mergeImportedAccounts,
   removeAccount,
@@ -98,18 +97,9 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .command('setup')
-    .argument('[file]', 'setup file path', 'data.txt')
-    .option('--base-url <url>')
-    .option('--name <prefix>', 'account name prefix')
-    .action(async (filePath: string, options: { baseUrl?: string; name?: string }) => {
-      const importOptions: { baseUrl?: string; namePrefix?: string } = {};
-      if (options.baseUrl) {
-        importOptions.baseUrl = options.baseUrl;
-      }
-      if (options.name) {
-        importOptions.namePrefix = options.name;
-      }
-      const accounts = await importSetupAccountsFromFile(filePath, importOptions);
+    .argument('[file]', 'setup file path', 'data.json')
+    .action(async (filePath: string) => {
+      const accounts = await importAccountsFromFile(filePath);
       const imported = await mergeImportedAccounts(paths.accounts, accounts);
       outputImportSummary(output, 'Imported', imported.length, accounts.length - imported.length);
       output('Run: codex-relay "your task"');
@@ -192,13 +182,13 @@ async function promptText(message: string): Promise<string> {
 
 async function autoSetupFromDefaultFile(accountsPath: string, output: (text: string) => void): Promise<void> {
   const file = await loadAccountsFile(accountsPath);
-  if (file.accounts.length > 0 || !(await fileExists('data.txt'))) {
+  if (file.accounts.length > 0 || !(await fileExists('data.json'))) {
     return;
   }
 
-  const accounts = await importSetupAccountsFromFile('data.txt', {});
+  const accounts = await importAccountsFromFile('data.json');
   const imported = await mergeImportedAccounts(accountsPath, accounts);
-  outputImportSummary(output, 'Auto-imported', imported.length, accounts.length - imported.length, ' from data.txt');
+  outputImportSummary(output, 'Auto-imported', imported.length, accounts.length - imported.length, ' from data.json');
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -246,7 +236,7 @@ function outputImportSummary(
   }
 }
 
-async function testRelayAccount(account: AccountInput, fetchImpl: typeof fetch): Promise<boolean> {
+async function testRelayAccount(account: Pick<AccountInput, 'apiKey' | 'baseUrl'>, fetchImpl: typeof fetch): Promise<boolean> {
   const endpoint = `${account.baseUrl.replace(/\/+$/, '')}/models`;
   try {
     const response = await fetchImpl(endpoint, {

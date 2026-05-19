@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -49,5 +49,41 @@ describe('state store', () => {
     expect(state.lastSuccessfulAccount).toBe('relay-b');
     expect(state.currentIndex).toBe(1);
     expect(state.retryAvailability['relay-a']?.displayText).toBe('11:10 PM');
+  });
+
+  it('saves a state file with a generated timestamp when updatedAt is empty', async () => {
+    const state = await loadStateFile(statePath);
+    state.updatedAt = '';
+
+    await saveStateFile(statePath, state);
+
+    const saved = await loadStateFile(statePath);
+    expect(saved.updatedAt).toMatch(/T/);
+  });
+
+  it('rejects malformed state files', async () => {
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        currentIndex: -1,
+        retryAvailability: {},
+        updatedAt: 'not-a-date'
+      }),
+      'utf8'
+    );
+
+    await expect(loadStateFile(statePath)).rejects.toThrow(/invalid state file/i);
+  });
+
+  it('creates retry availability entries with later timestamps', async () => {
+    await markRetryAvailability(statePath, 'relay-a', {
+      displayText: 'soon',
+      availableAt: '2026-05-19T00:00:05.000Z'
+    });
+
+    const state = await loadStateFile(statePath);
+    expect(state.retryAvailability['relay-a']?.availableAt).toBe('2026-05-19T00:00:05.000Z');
   });
 });

@@ -56,6 +56,82 @@ describe('runner', () => {
     expect(createDefaultProcessAdapter()).toHaveProperty('spawn');
   });
 
+  it('falls back to the node process adapter when pty loading fails', () => {
+    const adapter = createDefaultProcessAdapter(() => {
+      throw new Error('pty missing');
+    });
+
+    expect(adapter).toHaveProperty('spawn');
+  });
+
+  it('uses the pty adapter when loading succeeds', () => {
+    const spawned: Array<{ command: string; args: string[]; options: { cwd: string; env: NodeJS.ProcessEnv } }> = [];
+    const fakePtyModule = {
+      spawn(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) {
+        spawned.push({ command, args, options });
+        return {
+          onData: () => undefined,
+          onExit: () => undefined,
+          kill: () => undefined
+        };
+      }
+    };
+    const adapter = createDefaultProcessAdapter(() => fakePtyModule as unknown as typeof import('node-pty'));
+
+    const handle = adapter.spawn('codex', ['hello'], {
+      env: { FOO: 'bar' },
+      cwd: '/tmp/project'
+    });
+    handle.onData(() => undefined);
+    handle.onExit(() => undefined);
+    handle.kill();
+
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]?.command).toBe('codex');
+    expect(spawned[0]?.args).toEqual(['hello']);
+    expect(spawned[0]?.options).toMatchObject({
+      cwd: '/tmp/project',
+      env: { FOO: 'bar' }
+    });
+  });
+
+  it('runs through the node process adapter fallback', async () => {
+    const adapter = createDefaultProcessAdapter(() => {
+      throw new Error('pty missing');
+    });
+    const data: string[] = [];
+    const handle = adapter.spawn(
+      process.execPath,
+      ['-e', 'console.log("node-ok"); console.error("node-err")'],
+      { env: process.env }
+    );
+
+    const exit = await new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      handle.onData((chunk) => data.push(chunk));
+      handle.onExit(resolve);
+    });
+
+    expect(exit.exitCode).toBe(0);
+    expect(data.join('')).toContain('node-ok');
+    expect(data.join('')).toContain('node-err');
+  });
+
+  it('kills the node process adapter child process', async () => {
+    const adapter = createDefaultProcessAdapter(() => {
+      throw new Error('pty missing');
+    });
+    const handle = adapter.spawn(process.execPath, ['-e', 'setTimeout(() => undefined, 10000)'], {
+      env: process.env
+    });
+
+    const exitPromise = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      handle.onExit(resolve);
+    });
+    handle.kill();
+
+    await expect(exitPromise).resolves.toBeDefined();
+  });
+
   it('rotates on high-confidence quota output and resumes the same session', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
@@ -321,20 +397,41 @@ describe('runner', () => {
       )
     ).rejects.toThrow(/all relay accounts/i);
   });
+
+  it('passes cwd to the spawned codex process', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+
+    const adapter = new FakeAdapter([['ok\n']]);
+
+    await runManagedCodex(
+      { codexArgs: ['do task'], cwd: '/workspace/project' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(adapter.spawns[0]?.cwd).toBe('/workspace/project');
+  });
 });
 
 type FakeScript = string[] | { chunks: string[]; exitCode: number };
 
 class FakeAdapter implements ProcessAdapter {
-  public spawns: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
+  public spawns: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string }> = [];
   private readonly scripts: FakeScript[];
 
   constructor(scripts: FakeScript[]) {
     this.scripts = scripts;
   }
 
-  spawn(command: string, args: string[], options: { env: NodeJS.ProcessEnv }): ProcessHandle {
-    this.spawns.push({ command, args, env: options.env });
+  spawn(command: string, args: string[], options: { env: NodeJS.ProcessEnv; cwd?: string }): ProcessHandle {
+    this.spawns.push({ command, args, env: options.env, cwd: options.cwd });
     const script = this.scripts.shift() ?? [];
     const handle = Array.isArray(script)
       ? new FakeHandle(script, 0)

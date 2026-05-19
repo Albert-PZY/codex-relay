@@ -40,6 +40,17 @@ describe('rotation', () => {
     expect(buildRotationOrder(accounts, state)).toEqual(['relay-b', 'relay-c', 'relay-a']);
   });
 
+  it('returns an empty rotation order for an empty account pool', () => {
+    const state: StateFile = {
+      version: 1,
+      currentIndex: 0,
+      retryAvailability: {},
+      updatedAt: '2026-05-18T00:00:00.000Z'
+    };
+
+    expect(buildRotationOrder({ version: 1, customQuotaPatterns: [], accounts: [] }, state)).toEqual([]);
+  });
+
   it('skips unavailable accounts', () => {
     const state: StateFile = {
       version: 1,
@@ -86,5 +97,23 @@ describe('rotation', () => {
     };
 
     expect(chooseNextAccount(accounts, state, undefined, new Date('2026-05-19T00:00:00.000Z'))).toBeUndefined();
+  });
+
+  it('rotates after the current unavailable account', () => {
+    const state: StateFile = {
+      version: 1,
+      currentIndex: 0,
+      retryAvailability: {
+        'relay-b': {
+          displayText: 'future',
+          availableAt: '2099-01-01T00:00:00.000Z'
+        }
+      },
+      updatedAt: '2026-05-18T00:00:00.000Z'
+    };
+
+    expect(chooseNextAccount(accounts, state, 'relay-b', new Date('2026-05-19T00:00:00.000Z'))).toBe(
+      'relay-c'
+    );
   });
 });

@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { readJsonFile, writeJsonAtomic } from '../utils/atomic.js';
 import type { AccountsFile, RelayAccount } from '../types.js';
@@ -11,6 +10,13 @@ const accountSchema = z.object({
   addedAt: z.string().datetime()
 });
 
+const importAccountSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  apiKey: z.string().trim().min(1),
+  baseUrl: z.string().trim().url(),
+  model: z.string().trim().min(1).optional()
+}).strict();
+
 const accountsFileSchema = z.object({
   version: z.literal(1),
   preferred: z.string().trim().min(1).optional(),
@@ -19,6 +25,12 @@ const accountsFileSchema = z.object({
 });
 
 export type AccountInput = Omit<RelayAccount, 'addedAt'> & { addedAt?: string };
+export interface ImportedAccountInput {
+  apiKey: string;
+  baseUrl: string;
+  name?: string | undefined;
+  model?: string | undefined;
+}
 
 export async function loadAccountsFile(filePath: string): Promise<AccountsFile> {
   try {
@@ -63,6 +75,7 @@ export async function addAccounts(
     }
     batchNames.add(account.name);
   }
+
   const file = await loadAccountsFile(filePath);
   const nextAccounts = [...file.accounts];
   const existingIndexes = new Map<string, number>();
@@ -93,28 +106,39 @@ export async function addAccounts(
   return accounts;
 }
 
-export async function mergeImportedAccounts(filePath: string, inputs: AccountInput[]): Promise<RelayAccount[]> {
+export async function mergeImportedAccounts(
+  filePath: string,
+  inputs: ImportedAccountInput[]
+): Promise<RelayAccount[]> {
   if (inputs.length === 0) {
     return [];
   }
 
   const addedAt = new Date().toISOString();
-  const accounts = inputs.map((input) =>
-    validateAccount({
-      ...input,
-      addedAt: input.addedAt ?? addedAt
-    })
-  );
+  const candidates = inputs.map((input, index) => validateImportedAccount(input, index));
   const file = await loadAccountsFile(filePath);
   const seenNames = new Set(file.accounts.map((account) => account.name));
   const seenFingerprints = new Set(file.accounts.map((account) => accountFingerprint(account)));
+  const generatedNameCounters = seedGeneratedNameCounters([...seenNames]);
   const imported: RelayAccount[] = [];
 
-  for (const account of accounts) {
-    const fingerprint = accountFingerprint(account);
-    if (seenNames.has(account.name) || seenFingerprints.has(fingerprint)) {
+  for (const candidate of candidates) {
+    const fingerprint = accountFingerprint(candidate);
+    if (seenFingerprints.has(fingerprint)) {
       continue;
     }
+
+    const name = candidate.name ?? generateAccountName(candidate.baseUrl, seenNames, generatedNameCounters);
+    if (seenNames.has(name)) {
+      continue;
+    }
+
+    const account = validateAccount({
+      ...candidate,
+      name,
+      addedAt
+    });
+
     seenNames.add(account.name);
     seenFingerprints.add(fingerprint);
     imported.push(account);
@@ -167,270 +191,61 @@ export async function setPreferredAccount(filePath: string, name: string): Promi
   });
 }
 
-export async function importAccountsFromFile(filePath: string): Promise<AccountInput[]> {
-  return importAccountsFromText(await readFile(filePath, 'utf8'));
-}
-
-export async function importSetupAccountsFromFile(
-  filePath: string,
-  options: { baseUrl?: string; namePrefix?: string }
-): Promise<AccountInput[]> {
-  return importSetupAccountsFromText(await readFile(filePath, 'utf8'), options);
-}
-
-export function importAccountsFromText(raw: string): AccountInput[] {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return [];
-  }
-
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    return parseJsonImport(trimmed);
-  }
-
-  return trimmed
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#'))
-    .map(parseTextImportLine);
-}
-
-export function importSetupAccountsFromText(
-  raw: string,
-  options: { baseUrl?: string; namePrefix?: string }
-): AccountInput[] {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return [];
-  }
-
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    return parseJsonImport(trimmed);
-  }
-
-  if (raw.split(/\r?\n/).some((line) => parseBaseUrlAssignment(line) || parseStandaloneBaseUrlLine(line.trim()))) {
-    return parseSegmentedSetupText(raw, options);
-  }
-
-  if (options.baseUrl) {
-    return importKeyLinesWithBaseUrl(raw, {
-      baseUrl: options.baseUrl,
-      ...(options.namePrefix ? { namePrefix: options.namePrefix } : {})
-    });
-  }
-
-  if (firstEffectiveLine(raw)?.startsWith('http')) {
-    return importAccountsFromText(raw);
-  }
-
-  throw new Error('No base URL found. Add a `base_url = "https://.../v1"` line or run with `--base-url <url>`.');
-}
-
-export function importKeyLinesWithBaseUrl(
-  raw: string,
-  options: { baseUrl: string; namePrefix?: string }
-): AccountInput[] {
-  const baseUrl = options.baseUrl.trim();
-  if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
-    throw new Error('Base URL must start with http:// or https://.');
-  }
-  const namePrefix = options.namePrefix?.trim() || inferName(baseUrl, 0);
-  const keys = raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(isEffectiveDataLine);
-
-  if (keys.length === 0) {
-    throw new Error('No API keys found in the import file.');
-  }
-
-  return keys.map((apiKey, index) => ({
-    name: `${namePrefix}-${index + 1}`,
-    apiKey: requireNonEmptyKey(apiKey),
-    baseUrl
-  }));
-}
-
-function parseJsonImport(raw: string): AccountInput[] {
-  const parsed = JSON.parse(raw) as unknown;
-  const records = extractImportRecords(parsed);
-
-  if (!Array.isArray(records)) {
-    throw new Error('Invalid import file: accounts must be an array.');
-  }
-
-  return records.flatMap((record, index) => {
-    const source = record as Partial<AccountInput> & {
-      key?: string;
-      baseURL?: string;
-      url?: string;
-      apiKeys?: string[];
-      keys?: string[];
-    };
-    const baseUrl = source.baseUrl || source.baseURL || source.url || '';
-    const keys = source.apiKeys || source.keys;
-    if (Array.isArray(keys)) {
-      if (!baseUrl) {
-        throw new Error('Invalid import file: base URL is required for relay key pools.');
-      }
-      if (keys.length === 0) {
-        throw new Error('Invalid import file: key pool must contain at least one API key.');
-      }
-      return keys.map((apiKey, keyIndex) => ({
-        name: `${source.name || inferName(baseUrl, index)}-${keyIndex + 1}`,
-        apiKey: requireNonEmptyKey(apiKey),
-        baseUrl,
-        ...(source.model ? { model: source.model } : {})
-      }));
+export async function importAccountsFromFile(filePath: string): Promise<ImportedAccountInput[]> {
+  try {
+    return parseImportedAccounts(await readJsonFile<unknown>(filePath));
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error('Import file must be valid JSON.');
     }
-    const account: AccountInput = {
-      name: source.name || inferName(baseUrl, index),
-      apiKey: source.apiKey || source.key || '',
-      baseUrl
-    };
-    if (source.model) {
-      account.model = source.model;
-    }
-    return [account];
-  });
+    throw error;
+  }
 }
 
-function parseTextImportLine(line: string, index: number): AccountInput {
-  const parts = line.split(',').map((part) => part.trim());
-  const [baseUrl = '', apiKey = '', name] = parts;
-  if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
-    throw new Error('Invalid import line: base URL is required before the API key.');
-  }
-  if (!apiKey) {
-    throw new Error('Invalid import line: API key is required after the base URL.');
+function parseImportedAccounts(raw: unknown): ImportedAccountInput[] {
+  if (!Array.isArray(raw)) {
+    throw new Error('Import file must be a top-level array of account objects.');
   }
 
-  return {
-    name: name || inferName(baseUrl, index),
-    apiKey,
-    baseUrl
-  };
+  return raw.map((record, index) => validateImportedAccount(record, index));
 }
 
-function parseSegmentedSetupText(
-  raw: string,
-  options: { baseUrl?: string; namePrefix?: string }
-): AccountInput[] {
-  const groups: Array<{ baseUrl: string; keys: string[]; index: number }> = [];
-  let current: { baseUrl: string; keys: string[]; index: number } | undefined;
+function validateImportedAccount(raw: unknown, index: number): ImportedAccountInput {
+  const result = importAccountSchema.safeParse(raw);
+  if (!result.success) {
+    throw new Error(`Invalid import file at item ${index + 1}: ${formatZodIssues(result.error.issues)}`);
+  }
+  return result.data;
+}
 
-  for (const line of raw.split(/\r?\n/).map((item) => item.trim())) {
-    if (!isEffectiveDataLine(line)) {
+function seedGeneratedNameCounters(names: string[]): Map<string, number> {
+  const counters = new Map<string, number>();
+  for (const name of names) {
+    const match = name.match(/^(.*)-(\d+)$/);
+    if (!match) {
       continue;
     }
-    const assignedBaseUrl = parseBaseUrlAssignment(line);
-    const inlineBaseUrl = parseStandaloneBaseUrlLine(line);
-    if (assignedBaseUrl || inlineBaseUrl) {
-      current = {
-        baseUrl: assignedBaseUrl || inlineBaseUrl || '',
-        keys: [],
-        index: groups.length
-      };
-      groups.push(current);
-      continue;
-    }
-    if (!current) {
-      if (!options.baseUrl) {
-        throw new Error('No base URL found before API key. Add a `base_url = "https://.../v1"` line first.');
-      }
-      current = {
-        baseUrl: options.baseUrl,
-        keys: [],
-        index: groups.length
-      };
-      groups.push(current);
-    }
-    current.keys.push(requireNonEmptyKey(line));
+    const baseName = match[1]!;
+    const suffix = Number.parseInt(match[2]!, 10);
+    counters.set(baseName, Math.max(counters.get(baseName) ?? 0, suffix));
   }
-
-  if (groups.length === 0) {
-    throw new Error('No relay accounts found in the setup file.');
-  }
-
-  let globalIndex = 0;
-  const baseNameCounts = new Map<string, number>();
-  const accounts = groups.flatMap((group) => {
-    if (group.keys.length === 0) {
-      throw new Error(`No API keys found after base URL ${group.baseUrl}.`);
-    }
-    return group.keys.map((apiKey) => {
-      const baseCount = baseNameCounts.get(group.baseUrl) ?? 0;
-      const name = options.namePrefix
-        ? `${options.namePrefix}-${globalIndex + 1}`
-        : `${inferName(group.baseUrl, group.index)}-${baseCount + 1}`;
-      globalIndex += 1;
-      baseNameCounts.set(group.baseUrl, baseCount + 1);
-      return {
-        name,
-        apiKey,
-        baseUrl: group.baseUrl
-      };
-    });
-  });
-
-  return accounts;
+  return counters;
 }
 
-function parseBaseUrlAssignment(line: string): string | undefined {
-  const match = line.match(/^(?:base_url|baseUrl|baseURL|url)\s*[:=]\s*["']?([^"'\s]+)["']?\s*$/i);
-  const baseUrl = match?.[1]?.trim();
-  if (!baseUrl) {
-    return undefined;
+function generateAccountName(
+  baseUrl: string,
+  seenNames: Set<string>,
+  counters: Map<string, number>
+): string {
+  const baseName = inferName(baseUrl, 0);
+  let suffix = (counters.get(baseName) ?? 0) + 1;
+  let candidate = `${baseName}-${suffix}`;
+  while (seenNames.has(candidate)) {
+    suffix += 1;
+    candidate = `${baseName}-${suffix}`;
   }
-  if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
-    throw new Error('Base URL must start with http:// or https://.');
-  }
-  return baseUrl;
-}
-
-function parseStandaloneBaseUrlLine(line: string): string | undefined {
-  if (!line.startsWith('http://') && !line.startsWith('https://')) {
-    return undefined;
-  }
-  if (line.includes(',')) {
-    return undefined;
-  }
-  return line;
-}
-
-function firstEffectiveLine(raw: string): string | undefined {
-  return raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(isEffectiveDataLine);
-}
-
-function isEffectiveDataLine(line: string): boolean {
-  return Boolean(line) && !line.startsWith('#') && !isSeparatorLine(line);
-}
-
-function isSeparatorLine(line: string): boolean {
-  return /^[-_=*—–]+$/.test(line.trim());
-}
-
-function extractImportRecords(parsed: unknown): unknown[] {
-  if (Array.isArray(parsed)) {
-    return parsed;
-  }
-  if (typeof parsed !== 'object' || parsed === null) {
-    return [];
-  }
-  const object = parsed as {
-    accounts?: unknown;
-    relays?: unknown;
-    pools?: unknown;
-  };
-  for (const field of [object.accounts, object.relays, object.pools]) {
-    if (Array.isArray(field)) {
-      return field;
-    }
-  }
-  return [];
+  counters.set(baseName, suffix);
+  return candidate;
 }
 
 function inferName(baseUrl: string, index: number): string {
@@ -442,17 +257,10 @@ function inferName(baseUrl: string, index: number): string {
   }
 }
 
-function requireNonEmptyKey(apiKey: string): string {
-  if (!apiKey?.trim()) {
-    throw new Error('Invalid import file: API key cannot be empty.');
-  }
-  return apiKey;
-}
-
 function validateAccount(raw: unknown): RelayAccount {
   const result = accountSchema.safeParse(raw);
   if (!result.success) {
-    throw new Error(`Invalid account: ${result.error.issues.map((issue) => issue.message).join('; ')}`);
+    throw new Error(`Invalid account: ${formatZodIssues(result.error.issues)}`);
   }
   return normalizeAccount(result.data);
 }
@@ -460,7 +268,7 @@ function validateAccount(raw: unknown): RelayAccount {
 function validateAccountsFile(raw: unknown): AccountsFile {
   const result = accountsFileSchema.safeParse(raw);
   if (!result.success) {
-    throw new Error(`Invalid accounts file: ${result.error.issues.map((issue) => issue.message).join('; ')}`);
+    throw new Error(`Invalid accounts file: ${formatZodIssues(result.error.issues)}`);
   }
   const normalizedAccounts = result.data.accounts.map(normalizeAccount);
   const names = new Set<string>();
@@ -519,8 +327,17 @@ function normalizeAccount(account: ParsedAccount): RelayAccount {
   return normalized;
 }
 
-function accountFingerprint(account: Pick<RelayAccount, 'apiKey' | 'baseUrl' | 'model'>): string {
+function accountFingerprint(account: { apiKey: string; baseUrl: string; model?: string | undefined }): string {
   return [account.baseUrl, account.apiKey, account.model ?? ''].join('\u0001');
+}
+
+function formatZodIssues(issues: Array<{ path: readonly PropertyKey[]; message: string }>): string {
+  return issues
+    .map((issue) => {
+      const path = issue.path.length > 0 ? `${issue.path.map(String).join('.')}: ` : '';
+      return `${path}${issue.message}`;
+    })
+    .join('; ');
 }
 
 function isMissingFile(error: unknown): boolean {
