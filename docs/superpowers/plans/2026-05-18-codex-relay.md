@@ -29,7 +29,7 @@
 - `src/types.ts`: shared public types.
 - `tests/**/*.test.ts`: unit and CLI tests.
 - `.github/workflows/ci.yml`: install/lint/test/build/pack checks.
-- `.github/workflows/release.yml`: npm publish on GitHub release.
+- `.github/workflows/release-please.yml`: release PR, GitHub Release, tag sync, and npm publish.
 - `.github/release-please-config.json` and `.release-please-manifest.json`: release automation.
 - `README.md`: user docs.
 - `CONTRIBUTING.md`: commit and contribution rules.
@@ -120,7 +120,7 @@
 - Create: `README.md`
 - Create: `CONTRIBUTING.md`
 - Create: `.github/workflows/ci.yml`
-- Create: `.github/workflows/release.yml`
+- Create: `.github/workflows/release-please.yml`
 - Create: `.github/release-please-config.json`
 - Create: `.release-please-manifest.json`
 - Modify: `docs/superpowers/memory/*.md`
