@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/Albert-PZY/codex-relay/compare/v0.2.0...v0.2.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* publish package under available npm name ([a2a8c00](https://github.com/Albert-PZY/codex-relay/commit/a2a8c00a607bdaa75a24bd15ed370065a0ee3fbe))
+* publish package under available npm name ([65609b6](https://github.com/Albert-PZY/codex-relay/commit/65609b6d9503f5497ff40efaa373d3af4124c404))
+
 ## [0.2.0](https://github.com/Albert-PZY/codex-relay/compare/v0.1.0...v0.2.0) (2026-05-19)
 
 
