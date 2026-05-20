@@ -28,7 +28,7 @@ const accountHealthSchema = z.object({
   lastSuccessAt: z.string().datetime().optional(),
   cooldownUntil: z.string().datetime().optional(),
   consecutiveFailures: z.number().int().min(0)
-});
+}).strict();
 
 const retiredAccountSchema = z.object({
   name: z.string().trim().min(1),
@@ -37,14 +37,14 @@ const retiredAccountSchema = z.object({
   firstFailedAt: z.string().datetime(),
   lastFailedAt: z.string().datetime(),
   removedAt: z.string().datetime()
-});
+}).strict();
 
 const healthFileSchema = z.object({
   version: z.literal(1),
   accounts: z.record(z.string(), accountHealthSchema),
   retired: z.array(retiredAccountSchema),
   updatedAt: z.string().datetime()
-});
+}).strict();
 
 export async function loadHealthFile(filePath: string): Promise<HealthFile> {
   try {

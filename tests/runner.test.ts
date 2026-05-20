@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addAccount } from '../src/core/accounts.js';
 import { loadHealthFile, recordAccountFailure } from '../src/core/health.js';
-import { loadStateFile, markRetryAvailability } from '../src/core/state.js';
+import { loadStateFile } from '../src/core/state.js';
 import {
   buildCodexArgs,
   buildCodexEnv,
@@ -590,38 +590,6 @@ describe('runner', () => {
     ]);
   });
 
-  it('skips accounts whose retry time is still in the future', async () => {
-    await addAccount(accountsPath, {
-      name: 'relay-a',
-      apiKey: 'sk-a',
-      baseUrl: 'https://a.example.com/v1'
-    });
-    await addAccount(accountsPath, {
-      name: 'relay-b',
-      apiKey: 'sk-b',
-      baseUrl: 'https://b.example.com/v1'
-    });
-    await markRetryAvailability(statePath, 'relay-a', {
-      displayText: 'future',
-      availableAt: '2099-01-01T00:00:00.000Z'
-    });
-
-    const adapter = new FakeAdapter([['ok\n']]);
-
-    const result = await runManagedCodex(
-      { codexArgs: ['do task'] },
-      {
-        paths: { accounts: accountsPath, state: statePath },
-        adapter,
-        output: () => undefined,
-        now: () => new Date('2026-05-19T00:00:00.000Z')
-      }
-    );
-
-    expect(result.usedAccount).toBe('relay-b');
-    expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-b');
-  });
-
   it('leases different accounts across concurrent managed runs', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
@@ -714,7 +682,6 @@ describe('runner', () => {
       JSON.stringify({
         version: 1,
         currentIndex: 0,
-        retryAvailability: {},
         leases: {
           expired: {
             accountName: 'relay-a',
@@ -889,7 +856,7 @@ describe('runner', () => {
     expect(adapter.spawns).toHaveLength(2);
   });
 
-  it('records retry windows from detector output', async () => {
+  it('records retry cooldowns from detector output', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -916,9 +883,6 @@ describe('runner', () => {
       }
     );
 
-    const { loadStateFile } = await import('../src/core/state.js');
-    const state = await loadStateFile(statePath);
-    expect(state.retryAvailability['relay-a']?.availableAt).toBe('2026-05-19T00:00:30.000Z');
     const health = await loadHealthFile(healthPath);
     expect(health.accounts['relay-a']).toMatchObject({
       status: 'cooldown',

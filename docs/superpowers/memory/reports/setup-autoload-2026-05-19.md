@@ -19,4 +19,4 @@
 - Local smoke-test details and exact temporary paths were intentionally left out.
 
 ## Open gaps
-- Gap: if setup grows more formats or migration behavior, promote setup compatibility into a dedicated contract doc.
+- Gap: if setup grows more formats, promote setup behavior into a dedicated contract doc.

@@ -13,11 +13,6 @@ export interface AccountsFile {
   accounts: RelayAccount[];
 }
 
-export interface RetryAvailability {
-  displayText: string;
-  availableAt: string;
-}
-
 export interface AccountLease {
   accountName: string;
   ownerId: string;
@@ -61,7 +56,6 @@ export interface StateFile {
   version: 1;
   currentIndex: number;
   lastSuccessfulAccount?: string;
-  retryAvailability: Record<string, RetryAvailability>;
   leases: Record<string, AccountLease>;
   updatedAt: string;
 }

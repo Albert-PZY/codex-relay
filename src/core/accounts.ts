@@ -8,7 +8,7 @@ const accountSchema = z.object({
   baseUrl: z.string().trim().url(),
   model: z.string().trim().min(1).optional(),
   addedAt: z.string().datetime()
-});
+}).strict();
 
 const importAccountSchema = z.object({
   name: z.string().trim().min(1).optional(),
@@ -22,7 +22,7 @@ const accountsFileSchema = z.object({
   preferred: z.string().trim().min(1).optional(),
   customQuotaPatterns: z.array(z.string()),
   accounts: z.array(accountSchema)
-});
+}).strict();
 
 export type AccountInput = Omit<RelayAccount, 'addedAt'> & { addedAt?: string };
 export interface ImportedAccountInput {
@@ -45,7 +45,7 @@ export async function loadAccountsFile(filePath: string): Promise<AccountsFile> 
 }
 
 export async function saveAccountsFile(filePath: string, data: AccountsFile): Promise<void> {
-  await writeJsonAtomic(filePath, validateAccountsFile(repairPreferred(data)));
+  await writeJsonAtomic(filePath, validateAccountsFile(data));
 }
 
 export async function listAccounts(filePath: string): Promise<RelayAccount[]> {
@@ -173,10 +173,18 @@ export async function removeAccount(filePath: string, name: string): Promise<voi
     throw new Error(`Account "${name}" does not exist.`);
   }
 
-  await saveAccountsFile(filePath, {
-    ...file,
+  const nextFile: AccountsFile = {
+    version: file.version,
+    customQuotaPatterns: file.customQuotaPatterns,
     accounts: nextAccounts
-  });
+  };
+  const preferred = file.preferred && nextAccounts.some((account) => account.name === file.preferred)
+    ? file.preferred
+    : nextAccounts[0]?.name;
+  if (preferred) {
+    nextFile.preferred = preferred;
+  }
+  await saveAccountsFile(filePath, nextFile);
 }
 
 export async function setPreferredAccount(filePath: string, name: string): Promise<void> {
@@ -278,30 +286,16 @@ function validateAccountsFile(raw: unknown): AccountsFile {
     }
     names.add(account.name);
   }
-  return repairPreferred({
+  const file: AccountsFile = {
     version: 1,
     ...(result.data.preferred ? { preferred: result.data.preferred } : {}),
     customQuotaPatterns: result.data.customQuotaPatterns,
     accounts: normalizedAccounts
-  });
-}
-
-function repairPreferred(file: AccountsFile): AccountsFile {
-  const preferred = file.preferred && file.accounts.some((account) => account.name === file.preferred)
-    ? file.preferred
-    : file.accounts[0]?.name;
-
-  const repaired: AccountsFile = {
-    version: file.version,
-    customQuotaPatterns: [...file.customQuotaPatterns],
-    accounts: file.accounts.map(normalizeAccount)
   };
-  if (preferred) {
-    repaired.preferred = preferred;
-  } else {
-    delete repaired.preferred;
+  if (file.preferred && !names.has(file.preferred)) {
+    throw new Error(`Invalid accounts file: preferred account "${file.preferred}" does not exist.`);
   }
-  return repaired;
+  return file;
 }
 
 function createEmptyAccountsFile(): AccountsFile {

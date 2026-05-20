@@ -182,7 +182,7 @@ describe('account store', () => {
     ).rejects.toThrow(/invalid account/i);
   });
 
-  it('repairs preferred account after remove', async () => {
+  it('updates preferred account after remove', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -381,6 +381,29 @@ describe('account store', () => {
     await expect(loadAccountsFile(accountsPath)).rejects.toThrow(/invalid accounts file/i);
   });
 
+  it('rejects unknown stored account fields', async () => {
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      accountsPath,
+      JSON.stringify({
+        version: 1,
+        customQuotaPatterns: [],
+        accounts: [
+          {
+            name: 'relay-a',
+            apiKey: 'sk-a',
+            baseUrl: 'https://a.example.com/v1',
+            addedAt: '2026-05-18T00:00:00.000Z',
+            staleField: true
+          }
+        ]
+      }),
+      'utf8'
+    );
+
+    await expect(loadAccountsFile(accountsPath)).rejects.toThrow(/invalid accounts file/i);
+  });
+
   it('removes preferred account when the store becomes empty', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
@@ -421,7 +444,7 @@ describe('account store', () => {
     expect(imported).toEqual([]);
   });
 
-  it('keeps existing preferred account when saving a file with an invalid preferred value', async () => {
+  it('rejects stored files with an invalid preferred account', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -429,10 +452,12 @@ describe('account store', () => {
     });
     const file = await loadAccountsFile(accountsPath);
 
-    await saveAccountsFile(accountsPath, {
-      ...file,
-      preferred: 'missing'
-    });
+    await expect(
+      saveAccountsFile(accountsPath, {
+        ...file,
+        preferred: 'missing'
+      })
+    ).rejects.toThrow(/preferred account/i);
 
     const saved = await loadAccountsFile(accountsPath);
     expect(saved.preferred).toBe('relay-a');

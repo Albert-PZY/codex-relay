@@ -1,7 +1,7 @@
 ## Summary
 - Result: updated
 - Source spec: none
-- Source context: npm publish failed after token repair because the scoped package could not be created; branch rules also required exact status contexts.
+- Source context: npm publish failed after token update because the scoped package could not be created; branch rules also required exact status contexts.
 - Formal commits: `fec354b`, `9821ce9`, `7873b25`, `35eb7c1`, `65609b6`, `499be37`
 - Created docs: 1
 - Updated docs: 1

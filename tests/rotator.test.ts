@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountsFile, HealthFile, StateFile } from '../src/types.js';
-import { chooseNextAccount, buildRotationOrder, isAccountAvailable } from '../src/core/rotator.js';
+import { buildRotationOrder, isAccountAvailable } from '../src/core/rotator.js';
 
 const accounts: AccountsFile = {
   version: 1,
@@ -30,109 +30,29 @@ const accounts: AccountsFile = {
 
 describe('rotation', () => {
   it('prefers the configured starting account first', () => {
-    const state: StateFile = {
-      version: 1,
-      currentIndex: 0,
-      retryAvailability: {},
-      updatedAt: '2026-05-18T00:00:00.000Z'
-    };
-
-    expect(buildRotationOrder(accounts, state)).toEqual(['relay-b', 'relay-c', 'relay-a']);
+    expect(buildRotationOrder(accounts, state())).toEqual(['relay-b', 'relay-c', 'relay-a']);
   });
 
   it('returns an empty rotation order for an empty account pool', () => {
-    const state: StateFile = {
-      version: 1,
-      currentIndex: 0,
-      retryAvailability: {},
-      updatedAt: '2026-05-18T00:00:00.000Z'
-    };
-
-    expect(buildRotationOrder({ version: 1, customQuotaPatterns: [], accounts: [] }, state)).toEqual([]);
+    expect(buildRotationOrder({ version: 1, customQuotaPatterns: [], accounts: [] }, state())).toEqual([]);
   });
 
-  it('skips unavailable accounts', () => {
-    const state: StateFile = {
-      version: 1,
-      currentIndex: 0,
-      retryAvailability: {
-        'relay-b': {
-          displayText: '11:10 PM',
-          availableAt: '2099-01-01T23:10:00.000Z'
-        }
-      },
-      updatedAt: '2026-05-18T00:00:00.000Z'
-    };
-
-    expect(chooseNextAccount(accounts, state, 'relay-a', new Date('2026-05-18T00:00:00.000Z'))).toBe('relay-a');
-    expect(chooseNextAccount(accounts, state, 'relay-b', new Date('2026-05-18T00:00:00.000Z'))).toBe('relay-c');
+  it('uses requested account before preferred and state index', () => {
+    expect(buildRotationOrder(accounts, state(), 'relay-c')).toEqual(['relay-c', 'relay-a', 'relay-b']);
   });
 
-  it('treats expired retry windows as available', () => {
-    const state: StateFile = {
-      version: 1,
-      currentIndex: 0,
-      retryAvailability: {
-        'relay-a': {
-          displayText: 'old',
-          availableAt: '2026-05-18T00:00:00.000Z'
-        }
-      },
-      updatedAt: '2026-05-18T00:00:00.000Z'
-    };
-
-    expect(isAccountAvailable('relay-a', state, new Date('2026-05-19T00:00:00.000Z'))).toBe(true);
-  });
-
-  it('returns undefined when all accounts are unavailable', () => {
-    const state: StateFile = {
-      version: 1,
-      currentIndex: 0,
-      retryAvailability: {
-        'relay-a': { displayText: 'future', availableAt: '2099-01-01T00:00:00.000Z' },
-        'relay-b': { displayText: 'future', availableAt: '2099-01-01T00:00:00.000Z' },
-        'relay-c': { displayText: 'future', availableAt: '2099-01-01T00:00:00.000Z' }
-      },
-      updatedAt: '2026-05-18T00:00:00.000Z'
-    };
-
-    expect(chooseNextAccount(accounts, state, undefined, new Date('2026-05-19T00:00:00.000Z'))).toBeUndefined();
-  });
-
-  it('rotates after the current unavailable account', () => {
-    const state: StateFile = {
-      version: 1,
-      currentIndex: 0,
-      retryAvailability: {
-        'relay-b': {
-          displayText: 'future',
-          availableAt: '2099-01-01T00:00:00.000Z'
-        }
-      },
-      updatedAt: '2026-05-18T00:00:00.000Z'
-    };
-
-    expect(chooseNextAccount(accounts, state, 'relay-b', new Date('2026-05-19T00:00:00.000Z'))).toBe(
-      'relay-c'
-    );
-  });
-
-  it('skips accounts that are cooling down in health state', () => {
-    const state: StateFile = {
-      version: 1,
-      currentIndex: 0,
-      retryAvailability: {},
-      updatedAt: '2026-05-18T00:00:00.000Z'
-    };
+  it('uses health cooldown as the only availability gate', () => {
     const health: HealthFile = {
       version: 1,
       accounts: {
+        'relay-a': {
+          status: 'cooldown',
+          cooldownUntil: '2099-01-01T00:00:00.000Z',
+          consecutiveFailures: 1
+        },
         'relay-b': {
           status: 'cooldown',
-          reason: 'quota',
-          firstFailedAt: '2026-05-18T00:00:00.000Z',
-          lastFailedAt: '2026-05-18T00:00:00.000Z',
-          cooldownUntil: '2026-05-19T01:00:00.000Z',
+          cooldownUntil: '2026-05-18T00:00:00.000Z',
           consecutiveFailures: 1
         }
       },
@@ -140,8 +60,17 @@ describe('rotation', () => {
       updatedAt: '2026-05-18T00:00:00.000Z'
     };
 
-    expect(chooseNextAccount(accounts, state, 'relay-b', new Date('2026-05-19T00:00:00.000Z'), undefined, health)).toBe(
-      'relay-c'
-    );
+    expect(isAccountAvailable('relay-a', new Date('2026-05-19T00:00:00.000Z'), health)).toBe(false);
+    expect(isAccountAvailable('relay-b', new Date('2026-05-19T00:00:00.000Z'), health)).toBe(true);
+    expect(isAccountAvailable('relay-c', new Date('2026-05-19T00:00:00.000Z'), health)).toBe(true);
   });
 });
+
+function state(): StateFile {
+  return {
+    version: 1,
+    currentIndex: 0,
+    leases: {},
+    updatedAt: '2026-05-18T00:00:00.000Z'
+  };
+}

@@ -20,7 +20,7 @@ The runner keeps output passthrough simple. It watches child output with a conse
 - `codex-relay add <name> --key <key> --base-url <url> [--model <model>]` adds or updates an account non-interactively.
 - `codex-relay add <name>` prompts for missing values.
 - `codex-relay list` prints account names, relay URLs, default marker, and retry status.
-- `codex-relay remove <name>` removes an account and repairs preferred/default state.
+- `codex-relay remove <name>` removes an account and updates preferred/default state.
 - `codex-relay use <name>` marks an account as the preferred starting account.
 - `codex-relay import <file>` imports relay accounts from a JSON top-level array of flat account objects.
 - `codex-relay setup [file]` imports `data.json` by default and uses the same JSON-only import path.
@@ -28,19 +28,19 @@ The runner keeps output passthrough simple. It watches child output with a conse
 
 ## Data Contract
 
-`accounts.json` is versioned and contains account records with unique names, API keys, base URLs, optional model names, and timestamps. `state.json` stores the current index, last successful account, exhausted accounts for the current run, retry availability, and updated timestamp. Writes use temporary files plus rename. Import files are JSON arrays where each item has `baseUrl`, `apiKey`, optional `name`, and optional `model`.
+`accounts.json` is versioned and contains account records with unique names, API keys, base URLs, optional model names, and timestamps. `state.json` stores the current index, last successful account, active leases, and updated timestamp. `health.json` stores cooldown and retirement state. Writes use temporary files plus rename. Import files are JSON arrays where each item has `baseUrl`, `apiKey`, optional `name`, and optional `model`.
 
 Local files containing secrets are ignored by git: `data.txt`, `data.json`, `.env*`, and local runtime data.
 
 ## Error Handling
 
-Detector output is normalized by stripping ANSI escape sequences and retaining a rolling buffer. Custom quota strings from config are supported. Rotation skips accounts marked unavailable until their retry timestamp has passed. If no account remains, the CLI restores terminal state, prints a clear message, and exits non-zero.
+Detector output is normalized with Node's built-in VT control stripping. Custom quota strings from config are supported. Rotation skips accounts marked unavailable in health state until their cooldown has passed. If no account remains, the CLI restores terminal state, prints a clear message, and exits non-zero.
 
 Account management commands validate duplicate names, valid URLs, and non-empty keys. Test commands report individual account status without exposing full API keys.
 
 ## Packaging And Release
 
-The repository uses Node.js `>=22 <23`, TypeScript, ESM, pnpm, commander, zod, node-pty, strip-ansi, and vitest. GitHub Actions run install, lint, test, build, and pack checks on pull requests and main. Releases use release-please with Conventional Commits; published GitHub releases trigger npm publishing with provenance.
+The repository uses Node.js `>=22 <23`, TypeScript, ESM, pnpm, commander, zod, node-pty, and vitest. GitHub Actions run install, lint, test, build, and pack checks on pull requests and main. Releases use release-please with Conventional Commits; published GitHub releases trigger npm publishing with provenance.
 
 ## Documentation
 

@@ -4,12 +4,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   loadStateFile,
-  markRetryAvailability,
   pruneExpiredLeases,
-  removeAccountLease,
-  saveAccountLease,
-  saveStateFile,
-  updateSuccessfulAccount
+  saveStateFile
 } from '../src/core/state.js';
 
 const tmpDir = fileURLToPath(new URL('./tmp-state/', import.meta.url));
@@ -26,7 +22,7 @@ describe('state store', () => {
     expect(state).toMatchObject({
       version: 1,
       currentIndex: 0,
-      retryAvailability: {}
+      leases: {}
     });
   });
 
@@ -41,17 +37,17 @@ describe('state store', () => {
     });
   });
 
-  it('tracks successful account and retry availability', async () => {
-    await updateSuccessfulAccount(statePath, 'relay-b', 1);
-    await markRetryAvailability(statePath, 'relay-a', {
-      displayText: '11:10 PM',
-      availableAt: '2026-01-01T23:10:00.000Z'
+  it('persists successful account fields', async () => {
+    const state = await loadStateFile(statePath);
+    await saveStateFile(statePath, {
+      ...state,
+      currentIndex: 1,
+      lastSuccessfulAccount: 'relay-b'
     });
 
-    const state = await loadStateFile(statePath);
-    expect(state.lastSuccessfulAccount).toBe('relay-b');
-    expect(state.currentIndex).toBe(1);
-    expect(state.retryAvailability['relay-a']?.displayText).toBe('11:10 PM');
+    const saved = await loadStateFile(statePath);
+    expect(saved.lastSuccessfulAccount).toBe('relay-b');
+    expect(saved.currentIndex).toBe(1);
   });
 
   it('saves a state file with a generated timestamp when updatedAt is empty', async () => {
@@ -72,7 +68,6 @@ describe('state store', () => {
         version: 1,
         currentIndex: -1,
         leases: {},
-        retryAvailability: {},
         updatedAt: 'not-a-date'
       }),
       'utf8'
@@ -81,32 +76,21 @@ describe('state store', () => {
     await expect(loadStateFile(statePath)).rejects.toThrow(/invalid state file/i);
   });
 
-  it('creates retry availability entries with later timestamps', async () => {
-    await markRetryAvailability(statePath, 'relay-a', {
-      displayText: 'soon',
-      availableAt: '2026-05-19T00:00:05.000Z'
-    });
-
-    const state = await loadStateFile(statePath);
-    expect(state.retryAvailability['relay-a']?.availableAt).toBe('2026-05-19T00:00:05.000Z');
-  });
-
-  it('loads legacy state files without leases', async () => {
+  it('rejects unknown state fields', async () => {
     await mkdir(tmpDir, { recursive: true });
     await writeFile(
       statePath,
       JSON.stringify({
         version: 1,
         currentIndex: 0,
-        retryAvailability: {},
+        leases: {},
+        staleField: true,
         updatedAt: '2026-05-19T00:00:00.000Z'
       }),
       'utf8'
     );
 
-    await expect(loadStateFile(statePath)).resolves.toMatchObject({
-      leases: {}
-    });
+    await expect(loadStateFile(statePath)).rejects.toThrow(/invalid state file/i);
   });
 
   it('prunes expired account leases', async () => {
@@ -136,7 +120,7 @@ describe('state store', () => {
     expect(Object.keys(pruned.leases)).toEqual(['active']);
   });
 
-  it('saves and removes account leases', async () => {
+  it('saves account leases', async () => {
     const lease = {
       accountName: 'relay-a',
       ownerId: 'owner-a',
@@ -145,13 +129,20 @@ describe('state store', () => {
       updatedAt: '2026-05-19T00:00:00.000Z',
       expiresAt: '2026-05-19T00:02:00.000Z'
     };
+    const state = await loadStateFile(statePath);
 
-    await saveAccountLease(statePath, lease);
-    let state = await loadStateFile(statePath);
-    expect(state.leases['owner-a']).toMatchObject(lease);
+    await saveStateFile(statePath, {
+      ...state,
+      leases: {
+        [lease.ownerId]: lease
+      },
+      updatedAt: lease.updatedAt
+    });
 
-    await removeAccountLease(statePath, 'owner-a');
-    state = await loadStateFile(statePath);
-    expect(state.leases).toEqual({});
+    await expect(loadStateFile(statePath)).resolves.toMatchObject({
+      leases: {
+        'owner-a': lease
+      }
+    });
   });
 });

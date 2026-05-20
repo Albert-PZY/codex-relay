@@ -42,9 +42,7 @@
   },
   "packageManager": "pnpm@11.1.0",
   "dependencies": {
-    "@inquirer/prompts": "^8.0.1",
     "commander": "^14.0.2",
-    "strip-ansi": "^7.1.2",
     "zod": "^4.1.13"
   },
   "optionalDependencies": {
