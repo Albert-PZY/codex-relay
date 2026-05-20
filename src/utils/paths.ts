@@ -12,6 +12,7 @@ export interface DataPaths {
   accounts: string;
   state: string;
   health: string;
+  codexHome: string;
 }
 
 export function resolveDataPaths(env: PathEnv = process.env): DataPaths {
@@ -23,6 +24,7 @@ export function resolveDataPaths(env: PathEnv = process.env): DataPaths {
     root,
     accounts: join(root, 'accounts.json'),
     state: join(root, 'state.json'),
-    health: join(root, 'health.json')
+    health: join(root, 'health.json'),
+    codexHome: join(root, 'codex-home')
   };
 }

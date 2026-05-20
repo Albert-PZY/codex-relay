@@ -44,7 +44,7 @@ export interface CodexSpawnTarget {
 }
 
 export interface RunnerDependencies {
-  paths?: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health'>>;
+  paths?: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health' | 'codexHome'>>;
   adapter?: ProcessAdapter;
   output?: (chunk: string) => void;
   outputStream?: NodeJS.WriteStream;
@@ -187,12 +187,17 @@ function isFile(path: string): boolean {
 
 export function buildCodexEnv(
   account: RelayAccount,
-  baseEnv: NodeJS.ProcessEnv = process.env
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  codexHome?: string
 ): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...baseEnv,
     OPENAI_API_KEY: account.apiKey
   };
+  if (codexHome) {
+    env.CODEX_HOME = codexHome;
+  }
+  return env;
 }
 
 export function buildCodexArgs(
@@ -280,6 +285,7 @@ export async function runManagedCodex(
   const input = dependencies.input ?? process.stdin;
   const now = dependencies.now ?? (() => new Date());
   const healthPath = resolveHealthPath(paths);
+  const codexHome = resolveCodexHomePath(paths);
   let accountsFile = await loadAccountsFile(paths.accounts);
 
   if (accountsFile.accounts.length === 0) {
@@ -322,6 +328,7 @@ export async function runManagedCodex(
       codexArgs: options.codexArgs,
       ...(options.cwd ? { cwd: options.cwd } : {}),
       env,
+      codexHome,
       input,
       output,
       outputStream,
@@ -353,6 +360,8 @@ export async function runManagedCodex(
 
     hasInterruptedSession = true;
     const failureAt = now();
+    const nextAccountName = findNextAvailableAccountName(rotationOrder, attempted, accountsFile, state, health, now());
+    output(formatRotationNotice(account.name, nextAccountName, result.reason ?? 'unknown'));
     health = await recordAccountFailure(healthPath, {
       accountName: account.name,
       baseUrl: account.baseUrl,
@@ -386,12 +395,42 @@ function resolveHealthPath(paths: Pick<DataPaths, 'accounts' | 'state'> & Partia
   return paths.health ?? join(dirname(paths.state), 'health.json');
 }
 
+function resolveCodexHomePath(paths: Pick<DataPaths, 'state'> & Partial<Pick<DataPaths, 'codexHome'>>): string {
+  return paths.codexHome ?? join(dirname(paths.state), 'codex-home');
+}
+
+function findNextAvailableAccountName(
+  rotationOrder: string[],
+  attempted: Set<string>,
+  accountsFile: Awaited<ReturnType<typeof loadAccountsFile>>,
+  state: Awaited<ReturnType<typeof loadStateFile>>,
+  health: Awaited<ReturnType<typeof loadHealthFile>>,
+  now: Date
+): string | undefined {
+  for (const name of rotationOrder) {
+    if (attempted.has(name)) {
+      continue;
+    }
+    const account = getAccountByName(accountsFile, name);
+    if (account && isAccountAvailable(account.name, state, now, health)) {
+      return account.name;
+    }
+  }
+  return undefined;
+}
+
+function formatRotationNotice(from: string, to: string | undefined, reason: HealthFailureReason): string {
+  const target = to ?? 'no available account';
+  return `\n[codex-relay] ${from} failed (${reason}); switching to ${target} and resuming the conversation.\n`;
+}
+
 interface RunAttemptArgs {
   adapter: ProcessAdapter;
   account: RelayAccount;
   codexArgs: string[];
   cwd?: string;
   env: NodeJS.ProcessEnv;
+  codexHome: string;
   input: NodeJS.ReadStream;
   output: (chunk: string) => void;
   outputStream: NodeJS.WriteStream;
@@ -413,7 +452,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
     let reason: HealthFailureReason | undefined;
     const terminalSize = getTerminalSize(args.outputStream);
     const spawnOptions: SpawnOptions = {
-      env: buildCodexEnv(args.account, args.env),
+      env: buildCodexEnv(args.account, args.env, args.codexHome),
       cols: terminalSize.cols,
       rows: terminalSize.rows
     };

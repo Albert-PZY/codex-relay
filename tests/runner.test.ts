@@ -35,12 +35,16 @@ describe('runner', () => {
     addedAt: '2026-05-18T00:00:00.000Z'
   };
 
-  it('builds codex env without overriding CODEX_HOME', () => {
+  it('builds codex env with relay-owned CODEX_HOME when provided', () => {
     const env = buildCodexEnv(account, { CODEX_HOME: '/keep', FOO: 'bar' });
 
     expect(env.OPENAI_API_KEY).toBe('sk-a');
     expect(env.CODEX_HOME).toBe('/keep');
     expect(env.FOO).toBe('bar');
+
+    const isolatedEnv = buildCodexEnv(account, { CODEX_HOME: '/user-codex' }, '/relay-codex');
+    expect(isolatedEnv.OPENAI_API_KEY).toBe('sk-a');
+    expect(isolatedEnv.CODEX_HOME).toBe('/relay-codex');
   });
 
   it('builds codex args with base url config and model', () => {
@@ -452,6 +456,45 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('resume');
     expect(adapter.spawns[1]?.args).toContain('--last');
     expect(adapter.spawns[1]?.args).toContain('Continue');
+  });
+
+  it('rotates on payload tier limit errors and shows the switch in output', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const output: string[] = [];
+    const adapter = new FakeAdapter([
+      ['unexpected status 413 Payload Too Large: Request body exceeds your tier limit (3MB for tier 0)\n'],
+      ['continued\n']
+    ]);
+
+    const result = await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, health: healthPath, codexHome: join(tmpDir, 'isolated-codex') },
+        adapter,
+        env: { CODEX_HOME: '/user-codex' },
+        output: (chunk) => output.push(chunk)
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
+    expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
+    expect(adapter.spawns[1]?.env.OPENAI_API_KEY).toBe('sk-b');
+    expect(adapter.spawns[0]?.env.CODEX_HOME).toBe(join(tmpDir, 'isolated-codex'));
+    expect(adapter.spawns[1]?.env.CODEX_HOME).toBe(join(tmpDir, 'isolated-codex'));
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain('--last');
+    expect(output.join('')).toContain('[codex-relay] relay-a failed (quota); switching to relay-b');
   });
 
   it('keeps non-interactive exec mode when resuming after rotation', async () => {
