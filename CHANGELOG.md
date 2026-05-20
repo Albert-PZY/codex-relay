@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/Albert-PZY/codex-relay/compare/v0.4.0...v0.4.1) (2026-05-20)
+
+
+### Bug Fixes
+
+* create relay codex home before launch ([#28](https://github.com/Albert-PZY/codex-relay/issues/28)) ([b10aa53](https://github.com/Albert-PZY/codex-relay/commit/b10aa533492114262ab9d26840abfc9bd4998384))
+
 ## [0.4.0](https://github.com/Albert-PZY/codex-relay/compare/v0.3.5...v0.4.0) (2026-05-20)
 
 
