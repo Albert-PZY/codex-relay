@@ -12,13 +12,14 @@ import {
   type AccountInput
 } from './core/accounts.js';
 import { loadHealthFile } from './core/health.js';
-import { loadStateFile } from './core/state.js';
+import { loadStateFile, pruneExpiredLeases, saveStateFile } from './core/state.js';
+import { withStoreLock } from './core/store-lock.js';
 import { runManagedCodex as defaultRunManagedCodex } from './core/runner.js';
 import { resolveDataPaths, type DataPaths } from './utils/paths.js';
 import type { AccountHealth, RunnerOptions, SpawnResult } from './types.js';
 
 export interface CliDependencies {
-  paths?: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health'>>;
+  paths?: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health' | 'lock'>>;
   output?: (text: string) => void;
   error?: (text: string) => void;
   fetch?: typeof fetch;
@@ -66,7 +67,9 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option('--overwrite', 'Overwrite an existing account with the same name / 覆盖同名账号')
     .action(async (name: string, options: { key?: string; baseUrl?: string; model?: string; overwrite?: boolean }) => {
       const account = await resolveAccountInput(name, options);
-      await addAccount(paths.accounts, account, { overwrite: Boolean(options.overwrite) });
+      await withStoreLock(paths, async () => {
+        await addAccount(paths.accounts, account, { overwrite: Boolean(options.overwrite) });
+      });
       output(`Added ${account.name}`);
     });
 
@@ -74,9 +77,11 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .command('list')
     .description('List accounts and health status / 查看账号和健康状态')
     .action(async () => {
-      const file = await loadAccountsFile(paths.accounts);
-      const state = await loadStateFile(paths.state);
-      const health = await loadHealthFile(resolveHealthPath(paths));
+      const { file, state, health } = await withStoreLock(paths, async () => ({
+        file: await loadAccountsFile(paths.accounts),
+        state: await loadFreshState(paths.state),
+        health: await loadHealthFile(resolveHealthPath(paths))
+      }));
       if (file.accounts.length === 0) {
         output('No accounts configured.');
         return;
@@ -85,7 +90,8 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         const marker = account.name === file.preferred ? '*' : ' ';
         const retry = state.retryAvailability[account.name];
         const status = retry ? `retry at ${retry.displayText}` : formatHealthStatus(health.accounts[account.name]);
-        output(`${marker} ${account.name} ${account.baseUrl} ${status}`);
+        const leaseText = countActiveLeases(state, account.name) > 0 ? ' in-use' : '';
+        output(`${marker} ${account.name} ${account.baseUrl} ${status}${leaseText}`);
       }
     });
 
@@ -94,7 +100,9 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .description('Remove an account / 删除账号')
     .argument('<name>')
     .action(async (name: string) => {
-      await removeAccount(paths.accounts, name);
+      await withStoreLock(paths, async () => {
+        await removeAccount(paths.accounts, name);
+      });
       output(`Removed ${name}`);
     });
 
@@ -103,7 +111,9 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .description('Set the preferred account / 设置默认优先账号')
     .argument('<name>')
     .action(async (name: string) => {
-      await setPreferredAccount(paths.accounts, name);
+      await withStoreLock(paths, async () => {
+        await setPreferredAccount(paths.accounts, name);
+      });
       output(`Using ${name}`);
     });
 
@@ -113,7 +123,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument('<file>')
     .action(async (filePath: string) => {
       const accounts = await importAccountsFromFile(filePath);
-      const imported = await mergeImportedAccounts(paths.accounts, accounts);
+      const imported = await withStoreLock(paths, async () => mergeImportedAccounts(paths.accounts, accounts));
       outputImportSummary(output, 'Imported', imported.length, accounts.length - imported.length);
     });
 
@@ -123,7 +133,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument('[file]', 'setup file path', 'data.json')
     .action(async (filePath: string) => {
       const accounts = await importAccountsFromFile(filePath);
-      const imported = await mergeImportedAccounts(paths.accounts, accounts);
+      const imported = await withStoreLock(paths, async () => mergeImportedAccounts(paths.accounts, accounts));
       outputImportSummary(output, 'Imported', imported.length, accounts.length - imported.length);
       output('Run: codex-relay "your task"');
     });
@@ -133,7 +143,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .description('Run a lightweight relay check / 轻量预检账号')
     .argument('[name]')
     .action(async (name?: string) => {
-      const file = await loadAccountsFile(paths.accounts);
+      const file = await withStoreLock(paths, async () => loadAccountsFile(paths.accounts));
       const accounts = name ? file.accounts.filter((account) => account.name === name) : file.accounts;
       if (name && accounts.length === 0) {
         throw new Error(`Account "${name}" does not exist.`);
@@ -148,8 +158,10 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .command('health')
     .description('Show account health records / 查看账号健康记录')
     .action(async () => {
-      const file = await loadAccountsFile(paths.accounts);
-      const health = await loadHealthFile(resolveHealthPath(paths));
+      const { file, health } = await withStoreLock(paths, async () => ({
+        file: await loadAccountsFile(paths.accounts),
+        health: await loadHealthFile(resolveHealthPath(paths))
+      }));
       if (file.accounts.length === 0 && health.retired.length === 0) {
         output('No health records.');
         return;
@@ -165,7 +177,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program.action(async () => {
     const options = program.opts<{ account?: string }>();
-    await autoSetupFromDefaultFile(paths.accounts, output);
+    await autoSetupFromDefaultFile(paths, output);
     const runnerOptions: RunnerOptions = {
       codexArgs: program.args
     };
@@ -262,15 +274,31 @@ async function promptText(message: string): Promise<string> {
   return input({ message });
 }
 
-async function autoSetupFromDefaultFile(accountsPath: string, output: (text: string) => void): Promise<void> {
-  const file = await loadAccountsFile(accountsPath);
-  if (file.accounts.length > 0 || !(await fileExists('data.json'))) {
+async function autoSetupFromDefaultFile(
+  paths: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'lock'>>,
+  output: (text: string) => void
+): Promise<void> {
+  const result = await withStoreLock(paths, async () => {
+    const file = await loadAccountsFile(paths.accounts);
+    if (file.accounts.length > 0 || !(await fileExists('data.json'))) {
+      return undefined;
+    }
+    const accounts = await importAccountsFromFile('data.json');
+    return {
+      accounts,
+      imported: await mergeImportedAccounts(paths.accounts, accounts)
+    };
+  });
+  if (!result) {
     return;
   }
-
-  const accounts = await importAccountsFromFile('data.json');
-  const imported = await mergeImportedAccounts(accountsPath, accounts);
-  outputImportSummary(output, 'Auto-imported', imported.length, accounts.length - imported.length, ' from data.json');
+  outputImportSummary(
+    output,
+    'Auto-imported',
+    result.imported.length,
+    result.accounts.length - result.imported.length,
+    ' from data.json'
+  );
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -306,6 +334,28 @@ function formatHealthStatus(health: AccountHealth | undefined): string {
   const reason = health.reason ?? 'unknown';
   const until = health.cooldownUntil ?? 'unknown';
   return `cooldown ${reason} until ${until}`;
+}
+
+async function loadFreshState(statePath: string): Promise<Awaited<ReturnType<typeof loadStateFile>>> {
+  const state = await loadStateFile(statePath);
+  const now = new Date();
+  const pruned = pruneExpiredLeases(state, now);
+  if (pruned === state) {
+    return state;
+  }
+  const updated = {
+    ...pruned,
+    updatedAt: now.toISOString()
+  };
+  await saveStateFile(statePath, updated);
+  return updated;
+}
+
+function countActiveLeases(state: Awaited<ReturnType<typeof loadStateFile>>, accountName: string): number {
+  const nowMs = Date.now();
+  return Object.values(state.leases).filter((lease) =>
+    lease.accountName === accountName && new Date(lease.expiresAt).getTime() > nowMs
+  ).length;
 }
 
 type RelayTestStatus = 'OK' | 'UNKNOWN' | 'FAILED';

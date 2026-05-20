@@ -30,11 +30,14 @@ status: active
 - Import-style flows use one idempotent merge path that skips duplicate account names and duplicate relay credentials.
 - Before a managed run, `src/cli.ts` auto-imports `data.json` only when the account store is empty.
 - `src/core/runner.ts` injects `OPENAI_API_KEY` and passes `-c openai_base_url="..."` per Codex child process.
+- `list` shows active account leases as `in-use` so concurrent terminal allocation is visible.
 
 ## Invariants
 
 - Do not modify the user's `~/.codex` configuration or auth files.
 - Keep account secrets outside the repository and under the user's home data directory.
+- Serialize shared account, health, and lease store updates through the local store lock.
+- Prefer unleased accounts for concurrent terminals and share only when the pool is tight.
 - Prefer exact session resume over "latest session" guessing.
 - Fall back to `resume --last Continue` only when the current output does not expose a session id.
 

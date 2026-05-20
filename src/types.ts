@@ -18,6 +18,16 @@ export interface RetryAvailability {
   availableAt: string;
 }
 
+export interface AccountLease {
+  accountName: string;
+  ownerId: string;
+  pid: number;
+  cwd?: string;
+  startedAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}
+
 export type HealthFailureReason = 'auth' | 'quota' | 'rate_limit' | 'server' | 'unknown';
 
 export interface AccountHealth {
@@ -52,6 +62,7 @@ export interface StateFile {
   currentIndex: number;
   lastSuccessfulAccount?: string;
   retryAvailability: Record<string, RetryAvailability>;
+  leases: Record<string, AccountLease>;
   updatedAt: string;
 }
 

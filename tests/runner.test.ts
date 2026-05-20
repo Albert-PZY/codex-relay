@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addAccount } from '../src/core/accounts.js';
 import { loadHealthFile, recordAccountFailure } from '../src/core/health.js';
-import { markRetryAvailability } from '../src/core/state.js';
+import { loadStateFile, markRetryAvailability } from '../src/core/state.js';
 import {
   buildCodexArgs,
   buildCodexEnv,
@@ -23,7 +23,7 @@ const statePath = join(tmpDir, 'state.json');
 const healthPath = join(tmpDir, 'health.json');
 
 afterEach(async () => {
-  await rm(tmpDir, { recursive: true, force: true });
+  await rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
 describe('runner', () => {
@@ -518,8 +518,10 @@ describe('runner', () => {
     expect(adapter.spawns).toHaveLength(2);
     expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
     expect(adapter.spawns[1]?.env.OPENAI_API_KEY).toBe('sk-b');
-    expect(adapter.spawns[0]?.env.CODEX_HOME).toBe(join(tmpDir, 'isolated-codex'));
-    expect(adapter.spawns[1]?.env.CODEX_HOME).toBe(join(tmpDir, 'isolated-codex'));
+    const codexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
+    expect(codexHome).not.toBe(join(tmpDir, 'isolated-codex'));
+    expect(codexHome.startsWith(join(tmpDir, 'isolated-codex', 'runs'))).toBe(true);
+    expect(adapter.spawns[1]?.env.CODEX_HOME).toBe(codexHome);
     expect(adapter.spawns[1]?.args).toContain('resume');
     expect(adapter.spawns[1]?.args).toContain('--last');
     expect(output.join('')).toContain('[codex-relay] relay-a failed (quota); switching to relay-b');
@@ -545,8 +547,10 @@ describe('runner', () => {
       }
     );
 
-    expect((await stat(codexHome)).isDirectory()).toBe(true);
-    expect(adapter.spawns[0]?.env.CODEX_HOME).toBe(codexHome);
+    const runCodexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
+    expect((await stat(runCodexHome)).isDirectory()).toBe(true);
+    expect(runCodexHome).not.toBe(codexHome);
+    expect(runCodexHome.startsWith(join(codexHome, 'runs'))).toBe(true);
   });
 
   it('keeps non-interactive exec mode when resuming after rotation', async () => {
@@ -616,6 +620,170 @@ describe('runner', () => {
 
     expect(result.usedAccount).toBe('relay-b');
     expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-b');
+  });
+
+  it('leases different accounts across concurrent managed runs', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const firstAdapter = new FakeAdapter([{ chunks: [], exitCode: 0, autoExit: false }]);
+    const secondAdapter = new FakeAdapter([{ chunks: ['ok\n'], exitCode: 0 }]);
+    const firstRun = runManagedCodex(
+      { codexArgs: ['first task'] },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter: firstAdapter,
+        output: () => undefined
+      }
+    );
+    const firstHandle = await firstAdapter.waitForHandle();
+
+    await runManagedCodex(
+      { codexArgs: ['second task'] },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter: secondAdapter,
+        output: () => undefined
+      }
+    );
+
+    expect(firstAdapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
+    expect(secondAdapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-b');
+    expect(firstAdapter.spawns[0]?.env.CODEX_HOME).not.toBe(secondAdapter.spawns[0]?.env.CODEX_HOME);
+    expect(String(firstAdapter.spawns[0]?.env.CODEX_HOME)).toContain(join(tmpDir, 'codex-home', 'runs'));
+    expect(String(secondAdapter.spawns[0]?.env.CODEX_HOME)).toContain(join(tmpDir, 'codex-home', 'runs'));
+    expect(Object.values((await loadStateFile(statePath)).leases)).toHaveLength(1);
+
+    firstHandle.exit();
+    await firstRun;
+    expect(Object.values((await loadStateFile(statePath)).leases)).toHaveLength(0);
+  });
+
+  it('shares an account only when every available account is already leased', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+
+    const firstAdapter = new FakeAdapter([{ chunks: [], exitCode: 0, autoExit: false }]);
+    const secondAdapter = new FakeAdapter([{ chunks: ['ok\n'], exitCode: 0 }]);
+    const output: string[] = [];
+    const firstRun = runManagedCodex(
+      { codexArgs: ['first task'] },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter: firstAdapter,
+        output: () => undefined
+      }
+    );
+    const firstHandle = await firstAdapter.waitForHandle();
+
+    await runManagedCodex(
+      { codexArgs: ['second task'] },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter: secondAdapter,
+        output: (chunk) => output.push(chunk)
+      }
+    );
+
+    expect(secondAdapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
+    expect(output.join('')).toContain('already in use in another terminal');
+
+    firstHandle.exit();
+    await firstRun;
+  });
+
+  it('ignores expired leases when choosing an account', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        currentIndex: 0,
+        retryAvailability: {},
+        leases: {
+          expired: {
+            accountName: 'relay-a',
+            ownerId: 'expired',
+            pid: 1,
+            startedAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+            expiresAt: '2026-05-19T00:01:00.000Z'
+          }
+        },
+        updatedAt: '2026-05-19T00:00:00.000Z'
+      }),
+      'utf8'
+    );
+
+    const adapter = new FakeAdapter([['ok\n']]);
+
+    await runManagedCodex(
+      { codexArgs: ['do task'] },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined,
+        now: () => new Date('2026-05-19T00:02:00.000Z')
+      }
+    );
+
+    expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
+    expect((await loadStateFile(statePath)).leases).toEqual({});
+  });
+
+  it('refreshes the active account lease while codex is running', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+
+    let currentTime = new Date('2026-05-19T00:00:00.000Z');
+    const adapter = new FakeAdapter([{ chunks: [], exitCode: 0, autoExit: false }]);
+    const run = runManagedCodex(
+      { codexArgs: ['long task'] },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined,
+        now: () => currentTime,
+        leaseHeartbeatMs: 5
+      }
+    );
+    const handle = await adapter.waitForHandle();
+    try {
+      let leases = Object.values((await loadStateFile(statePath)).leases);
+      expect(leases[0]?.accountName).toBe('relay-a');
+
+      currentTime = new Date('2026-05-19T00:01:00.000Z');
+      await waitFor(async () => {
+        leases = Object.values((await loadStateFile(statePath)).leases);
+        return leases[0]?.updatedAt === '2026-05-19T00:01:00.000Z';
+      });
+      expect(leases[0]).toMatchObject({
+        accountName: 'relay-a',
+        updatedAt: '2026-05-19T00:01:00.000Z',
+        expiresAt: '2026-05-19T00:03:00.000Z'
+      });
+    } finally {
+      handle.exit();
+      await run;
+    }
   });
 
   it('rotates across multiple keys under the same relay base url', async () => {
@@ -1143,4 +1311,15 @@ class FakeOutputStream extends EventEmitter {
     this.writes.push(chunk);
     return true;
   }
+}
+
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 1000): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Timed out waiting for condition.');
 }

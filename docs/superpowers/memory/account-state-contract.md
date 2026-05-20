@@ -28,13 +28,18 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 - `accounts.json` contains `version`, `preferred`, `customQuotaPatterns`, and `accounts`.
 - Each account contains `name`, `apiKey`, `baseUrl`, optional `model`, and `addedAt`.
 - Import files use a top-level JSON array; each item contains `baseUrl`, `apiKey`, optional `name`, and optional `model`.
-- `state.json` contains `version`, `currentIndex`, optional `lastSuccessfulAccount`, `retryAvailability`, and `updatedAt`.
+- `state.json` contains `version`, `currentIndex`, optional `lastSuccessfulAccount`, `retryAvailability`, `leases`, and `updatedAt`.
+- `leases` records active local runner sessions with `ownerId`, `accountName`, `pid`, optional `cwd`, `startedAt`, `updatedAt`, and `expiresAt`.
+- Runtime Codex homes are isolated per runner instance under `codex-home/runs/<ownerId>` so fallback resume state cannot cross active terminals.
 
 ## Invariants
 
 - Account names are unique.
 - Import-style writes are idempotent: duplicate names and duplicate `baseUrl + apiKey + model` credentials are skipped instead of requiring manual cleanup.
-- Writes are atomic through a temporary file plus rename.
+- Shared store writes are serialized through `store.lock`, then written atomically through a temporary file plus rename.
+- Concurrent runner sessions should prefer unleased accounts. Sharing an account is a fallback only when all available accounts are already leased.
+- Leases are short-lived and expire automatically if a terminal exits unexpectedly.
+- A runner must keep the same isolated Codex home for all retry and rotation attempts inside that run.
 - `data.txt`, `data.json`, `切号工具.md`, and local runtime data are ignored by git.
 
 ## Compatibility Notes

@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { spawn as spawnChild } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -12,11 +13,19 @@ import {
   recordAccountSuccess,
   retireExpiredHealthAccounts
 } from './health.js';
-import { loadStateFile, markRetryAvailability, updateSuccessfulAccount } from './state.js';
+import {
+  loadStateFile,
+  markRetryAvailability,
+  pruneExpiredLeases,
+  removeAccountLease,
+  saveStateFile,
+  updateSuccessfulAccount
+} from './state.js';
 import { buildRotationOrder, getAccountByName, getAccountIndex, isAccountAvailable } from './rotator.js';
+import { withStoreLock } from './store-lock.js';
 import { resolveDataPaths, type DataPaths } from '../utils/paths.js';
 import { restoreTerminal } from '../utils/terminal.js';
-import type { HealthFailureReason, RelayAccount, RunnerOptions, SpawnResult } from '../types.js';
+import type { AccountLease, AccountsFile, HealthFailureReason, HealthFile, RelayAccount, RunnerOptions, SpawnResult, StateFile } from '../types.js';
 
 export interface ProcessHandle {
   onData(callback: (chunk: string) => void): void;
@@ -45,14 +54,17 @@ export interface CodexSpawnTarget {
 }
 
 export interface RunnerDependencies {
-  paths?: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health' | 'codexHome'>>;
+  paths?: RunnerDataPaths;
   adapter?: ProcessAdapter;
   output?: (chunk: string) => void;
   outputStream?: NodeJS.WriteStream;
   env?: NodeJS.ProcessEnv;
   input?: NodeJS.ReadStream;
   now?: () => Date;
+  leaseHeartbeatMs?: number;
 }
+
+type RunnerDataPaths = Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health' | 'codexHome' | 'lock'>>;
 
 interface RunAttemptResult {
   exitCode: number | null;
@@ -103,6 +115,8 @@ const codexOptionsWithValue = new Set([
   '-i',
   '--image'
 ]);
+const ACCOUNT_LEASE_TTL_MS = 2 * 60 * 1000;
+const ACCOUNT_LEASE_HEARTBEAT_MS = 30 * 1000;
 
 export function resolveCodexSpawnTarget(
   env: NodeJS.ProcessEnv = process.env,
@@ -285,113 +299,89 @@ export async function runManagedCodex(
   const env = dependencies.env ?? process.env;
   const input = dependencies.input ?? process.stdin;
   const now = dependencies.now ?? (() => new Date());
+  const leaseHeartbeatMs = dependencies.leaseHeartbeatMs ?? ACCOUNT_LEASE_HEARTBEAT_MS;
   const healthPath = resolveHealthPath(paths);
-  const codexHome = resolveCodexHomePath(paths);
+  const ownerId = createLeaseOwnerId();
+  const codexHome = resolveRunCodexHome(resolveCodexHomePath(paths), ownerId);
   await mkdir(codexHome, { recursive: true });
-  let accountsFile = await loadAccountsFile(paths.accounts);
-
-  if (accountsFile.accounts.length === 0) {
-    throw new Error('No relay accounts configured. Put your relay accounts in data.json, then run `codex-relay setup` first.');
-  }
-
-  const retirement = await retireExpiredHealthAccounts(healthPath, accountsFile, now());
-  if (retirement.retiredNames.length > 0) {
-    accountsFile = retirement.accountsFile;
-    await saveAccountsFile(paths.accounts, accountsFile);
-  }
-
-  if (accountsFile.accounts.length === 0) {
-    throw new Error('All relay accounts were retired after failing continuously for ten days.');
-  }
-
-  let state = await loadStateFile(paths.state);
-  let health = await loadHealthFile(healthPath);
-  const rotationOrder = buildRotationOrder(accountsFile, state, options.accountName);
   let sessionId: string | undefined;
   let hasInterruptedSession = false;
   const attempted = new Set<string>();
+  let reserved = await reserveNextAccount({
+    paths,
+    healthPath,
+    ownerId,
+    attempted,
+    requestedAccount: options.accountName,
+    cwd: options.cwd,
+    now
+  });
+  const stopHeartbeat = startLeaseHeartbeat(paths, ownerId, now, leaseHeartbeatMs);
 
-  for (const accountName of rotationOrder) {
-    if (attempted.has(accountName)) {
-      continue;
-    }
-    attempted.add(accountName);
-    const account = getAccountByName(accountsFile, accountName);
-    if (!account) {
-      continue;
-    }
-    if (!isAccountAvailable(account.name, state, now(), health)) {
-      continue;
-    }
-
-    const attemptArgs: RunAttemptArgs = {
-      adapter,
-      account,
-      codexArgs: options.codexArgs,
-      ...(options.cwd ? { cwd: options.cwd } : {}),
-      env,
-      codexHome,
-      input,
-      output,
-      outputStream,
-      customQuotaPatterns: accountsFile.customQuotaPatterns
-    };
-    if (hasInterruptedSession) {
-      attemptArgs.resume = sessionId ? { sessionId, prompt: 'Continue' } : { prompt: 'Continue' };
-    }
-
-    output(formatAccountNotice(account, attemptArgs.resume !== undefined));
-    const result = await runAttempt(attemptArgs);
-
-    sessionId = result.sessionId ?? sessionId;
-
-    if (!result.shouldRotate) {
-      const accountIndex = getAccountIndex(accountsFile, account.name);
-      await updateSuccessfulAccount(paths.state, account.name, Math.max(0, accountIndex));
-      await recordAccountSuccess(healthPath, account.name, now());
-      restoreTerminal(outputStream);
-      const success: SpawnResult = {
-        exitCode: result.exitCode,
-        signal: result.signal,
-        usedAccount: account.name
-      };
-      if (sessionId) {
-        success.sessionId = sessionId;
+  try {
+    while (reserved) {
+      const account = reserved.account;
+      attempted.add(account.name);
+      if (reserved.shared) {
+        output(formatSharedAccountNotice(account.name));
       }
-      return success;
-    }
 
-    hasInterruptedSession = true;
-    const failureAt = now();
-    const nextAccountName = findNextAvailableAccountName(rotationOrder, attempted, accountsFile, state, health, now());
-    output(formatRotationNotice(account.name, nextAccountName, result.reason ?? 'unknown'));
-    health = await recordAccountFailure(healthPath, {
-      accountName: account.name,
-      baseUrl: account.baseUrl,
-      reason: result.reason ?? 'unknown',
-      now: failureAt,
-      ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {})
-    });
+      const attemptArgs: RunAttemptArgs = {
+        adapter,
+        account,
+        codexArgs: options.codexArgs,
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        env,
+        codexHome,
+        input,
+        output,
+        outputStream,
+        customQuotaPatterns: reserved.accountsFile.customQuotaPatterns
+      };
+      if (hasInterruptedSession) {
+        attemptArgs.resume = sessionId ? { sessionId, prompt: 'Continue' } : { prompt: 'Continue' };
+      }
 
-    const latestRetirement = await retireExpiredHealthAccounts(healthPath, accountsFile, failureAt);
-    if (latestRetirement.retiredNames.length > 0) {
-      accountsFile = latestRetirement.accountsFile;
-      health = latestRetirement.health;
-      await saveAccountsFile(paths.accounts, accountsFile);
-    }
+      output(formatAccountNotice(account, attemptArgs.resume !== undefined));
+      const result = await runAttempt(attemptArgs);
 
-    if (result.retryAfterMs) {
-      const availableAt = new Date(failureAt.getTime() + result.retryAfterMs);
-      await markRetryAvailability(paths.state, account.name, {
-        displayText: availableAt.toLocaleString(),
-        availableAt: availableAt.toISOString()
+      sessionId = result.sessionId ?? sessionId;
+
+      if (!result.shouldRotate) {
+        await recordSuccessfulAttempt(paths, healthPath, account.name, now());
+        restoreTerminal(outputStream);
+        const success: SpawnResult = {
+          exitCode: result.exitCode,
+          signal: result.signal,
+          usedAccount: account.name
+        };
+        if (sessionId) {
+          success.sessionId = sessionId;
+        }
+        return success;
+      }
+
+      hasInterruptedSession = true;
+      reserved = await recordFailedAttemptAndReserveNext({
+        paths,
+        healthPath,
+        ownerId,
+        failedAccount: account,
+        attempted,
+        requestedAccount: options.accountName,
+        cwd: options.cwd,
+        result,
+        now
       });
-      state = await loadStateFile(paths.state);
+      output(formatRotationNotice(account.name, reserved?.account.name, result.reason ?? 'unknown'));
     }
-  }
 
-  restoreTerminal(outputStream);
-  throw new Error('All relay accounts are unavailable or exhausted.');
+    restoreTerminal(outputStream);
+    throw new Error('All relay accounts are unavailable or exhausted.');
+  } finally {
+    await stopHeartbeat();
+    await releaseAccountLease(paths, ownerId);
+  }
 }
 
 function resolveHealthPath(paths: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health'>>): string {
@@ -402,24 +392,255 @@ function resolveCodexHomePath(paths: Pick<DataPaths, 'state'> & Partial<Pick<Dat
   return paths.codexHome ?? join(dirname(paths.state), 'codex-home');
 }
 
-function findNextAvailableAccountName(
-  rotationOrder: string[],
-  attempted: Set<string>,
-  accountsFile: Awaited<ReturnType<typeof loadAccountsFile>>,
-  state: Awaited<ReturnType<typeof loadStateFile>>,
-  health: Awaited<ReturnType<typeof loadHealthFile>>,
-  now: Date
-): string | undefined {
-  for (const name of rotationOrder) {
-    if (attempted.has(name)) {
-      continue;
+function resolveRunCodexHome(codexHomeRoot: string, ownerId: string): string {
+  return join(codexHomeRoot, 'runs', ownerId.replace(/[^a-zA-Z0-9._-]/g, '-'));
+}
+
+interface ReservedAccount {
+  account: RelayAccount;
+  accountsFile: AccountsFile;
+  shared: boolean;
+}
+
+interface ReserveNextInput {
+  paths: RunnerDataPaths;
+  healthPath: string;
+  ownerId: string;
+  attempted: Set<string>;
+  requestedAccount?: string | undefined;
+  cwd?: string | undefined;
+  now: () => Date;
+}
+
+interface FailureReserveInput extends ReserveNextInput {
+  failedAccount: RelayAccount;
+  result: RunAttemptResult;
+}
+
+async function reserveNextAccount(input: ReserveNextInput): Promise<ReservedAccount | undefined> {
+  return withStoreLock(input.paths, async () => reserveNextAccountLocked(input));
+}
+
+async function reserveNextAccountLocked(input: ReserveNextInput): Promise<ReservedAccount | undefined> {
+  let accountsFile = await loadAccountsFile(input.paths.accounts);
+  if (accountsFile.accounts.length === 0) {
+    throw new Error('No relay accounts configured. Put your relay accounts in data.json, then run `codex-relay setup` first.');
+  }
+
+  const currentTime = input.now();
+  const retirement = await retireExpiredHealthAccounts(input.healthPath, accountsFile, currentTime);
+  if (retirement.retiredNames.length > 0) {
+    accountsFile = retirement.accountsFile;
+    await saveAccountsFile(input.paths.accounts, accountsFile);
+  }
+  if (accountsFile.accounts.length === 0) {
+    throw new Error('All relay accounts were retired after failing continuously for ten days.');
+  }
+
+  const state = await loadPrunedState(input.paths, currentTime);
+  const health = await loadHealthFile(input.healthPath);
+  const selected = selectLeaseAwareAccount({
+    accountsFile,
+    state,
+    health,
+    attempted: input.attempted,
+    requestedAccount: input.requestedAccount,
+    ownerId: input.ownerId,
+    now: currentTime
+  });
+  if (!selected) {
+    return undefined;
+  }
+
+  const lease = buildAccountLease({
+    state,
+    ownerId: input.ownerId,
+    accountName: selected.account.name,
+    cwd: input.cwd,
+    now: currentTime
+  });
+  await saveStateFile(input.paths.state, {
+    ...state,
+    leases: {
+      ...state.leases,
+      [input.ownerId]: lease
+    },
+    updatedAt: lease.updatedAt
+  });
+
+  return {
+    account: selected.account,
+    accountsFile,
+    shared: selected.shared
+  };
+}
+
+async function recordFailedAttemptAndReserveNext(input: FailureReserveInput): Promise<ReservedAccount | undefined> {
+  return withStoreLock(input.paths, async () => {
+    const failureAt = input.now();
+    let accountsFile = await loadAccountsFile(input.paths.accounts);
+    await recordAccountFailure(input.healthPath, {
+      accountName: input.failedAccount.name,
+      baseUrl: input.failedAccount.baseUrl,
+      reason: input.result.reason ?? 'unknown',
+      now: failureAt,
+      ...(input.result.retryAfterMs !== undefined ? { retryAfterMs: input.result.retryAfterMs } : {})
+    });
+
+    const latestRetirement = await retireExpiredHealthAccounts(input.healthPath, accountsFile, failureAt);
+    if (latestRetirement.retiredNames.length > 0) {
+      accountsFile = latestRetirement.accountsFile;
+      await saveAccountsFile(input.paths.accounts, accountsFile);
     }
-    const account = getAccountByName(accountsFile, name);
-    if (account && isAccountAvailable(account.name, state, now, health)) {
-      return account.name;
+
+    if (input.result.retryAfterMs) {
+      const availableAt = new Date(failureAt.getTime() + input.result.retryAfterMs);
+      await markRetryAvailability(input.paths.state, input.failedAccount.name, {
+        displayText: availableAt.toLocaleString(),
+        availableAt: availableAt.toISOString()
+      });
+    }
+
+    return reserveNextAccountLocked(input);
+  });
+}
+
+async function recordSuccessfulAttempt(
+  paths: RunnerDataPaths,
+  healthPath: string,
+  accountName: string,
+  successAt: Date
+): Promise<void> {
+  await withStoreLock(paths, async () => {
+    const accountsFile = await loadAccountsFile(paths.accounts);
+    const accountIndex = getAccountIndex(accountsFile, accountName);
+    await updateSuccessfulAccount(paths.state, accountName, Math.max(0, accountIndex));
+    await recordAccountSuccess(healthPath, accountName, successAt);
+  });
+}
+
+async function releaseAccountLease(paths: RunnerDataPaths, ownerId: string): Promise<void> {
+  await withStoreLock(paths, async () => {
+    await removeAccountLease(paths.state, ownerId);
+  });
+}
+
+function startLeaseHeartbeat(paths: RunnerDataPaths, ownerId: string, now: () => Date, intervalMs: number): () => Promise<void> {
+  let inFlight: Promise<void> | undefined;
+  const heartbeat = setInterval(() => {
+    inFlight = withStoreLock(paths, async () => {
+      const currentTime = now();
+      const state = await loadPrunedState(paths, currentTime);
+      const currentLease = state.leases[ownerId];
+      if (!currentLease) {
+        return;
+      }
+      const nextLease = buildAccountLease({
+        state,
+        ownerId,
+        accountName: currentLease.accountName,
+        cwd: currentLease.cwd,
+        now: currentTime
+      });
+      await saveStateFile(paths.state, {
+        ...state,
+        leases: {
+          ...state.leases,
+          [ownerId]: nextLease
+        },
+        updatedAt: nextLease.updatedAt
+      });
+    }).catch(() => undefined);
+  }, intervalMs);
+  heartbeat.unref?.();
+  return async () => {
+    clearInterval(heartbeat);
+    await inFlight;
+  };
+}
+
+async function loadPrunedState(paths: RunnerDataPaths, now: Date): Promise<StateFile> {
+  const current = await loadStateFile(paths.state);
+  const pruned = pruneExpiredLeases(current, now);
+  if (pruned === current) {
+    return current;
+  }
+  const updated = {
+    ...pruned,
+    updatedAt: now.toISOString()
+  };
+  await saveStateFile(paths.state, updated);
+  return updated;
+}
+
+function selectLeaseAwareAccount(input: {
+  accountsFile: AccountsFile;
+  state: StateFile;
+  health: HealthFile;
+  attempted: Set<string>;
+  requestedAccount?: string | undefined;
+  ownerId: string;
+  now: Date;
+}): { account: RelayAccount; shared: boolean } | undefined {
+  const rotationOrder = buildRotationOrder(input.accountsFile, input.state, input.requestedAccount);
+  const leasedAccountNames = new Set<string>();
+  for (const lease of Object.values(input.state.leases)) {
+    if (lease.ownerId !== input.ownerId && new Date(lease.expiresAt).getTime() > input.now.getTime()) {
+      leasedAccountNames.add(lease.accountName);
     }
   }
-  return undefined;
+
+  const sharedCandidates: Array<{ account: RelayAccount; shared: true }> = [];
+  for (const name of rotationOrder) {
+    if (input.attempted.has(name)) {
+      continue;
+    }
+    const account = getAccountByName(input.accountsFile, name);
+    if (!account || !isAccountAvailable(account.name, input.state, input.now, input.health)) {
+      continue;
+    }
+    const shared = leasedAccountNames.has(name);
+    if (shared && name !== input.requestedAccount) {
+      sharedCandidates.push({ account, shared: true });
+      continue;
+    }
+    return { account, shared };
+  }
+
+  return sharedCandidates[0];
+}
+
+function buildAccountLease(input: {
+  state: StateFile;
+  ownerId: string;
+  accountName: string;
+  now: Date;
+  cwd?: string | undefined;
+}): AccountLease {
+  const existing = input.state.leases[input.ownerId];
+  const startedAt = existing?.accountName === input.accountName ? existing.startedAt : input.now.toISOString();
+  const lease: AccountLease = {
+    accountName: input.accountName,
+    ownerId: input.ownerId,
+    pid: process.pid,
+    startedAt,
+    updatedAt: input.now.toISOString(),
+    expiresAt: new Date(input.now.getTime() + ACCOUNT_LEASE_TTL_MS).toISOString()
+  };
+  if (input.cwd !== undefined) {
+    lease.cwd = input.cwd;
+  } else if (existing?.cwd) {
+    lease.cwd = existing.cwd;
+  }
+  return lease;
+}
+
+function createLeaseOwnerId(): string {
+  return `${process.pid}-${randomUUID()}`;
+}
+
+function formatSharedAccountNotice(accountName: string): string {
+  return `\n[codex-relay] ${accountName} is already in use in another terminal; sharing this account because the pool is currently tight.\n`;
 }
 
 function formatRotationNotice(from: string, to: string | undefined, reason: HealthFailureReason): string {
