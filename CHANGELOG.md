@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/Albert-PZY/codex-relay/compare/v0.5.0...v0.6.0) (2026-05-20)
+
+
+### Features
+
+* coordinate concurrent relay sessions ([93e9eba](https://github.com/Albert-PZY/codex-relay/commit/93e9ebafa42bd0c03f3e16cf8b882abed40d55cf))
+
 ## [0.5.0](https://github.com/Albert-PZY/codex-relay/compare/v0.4.1...v0.5.0) (2026-05-20)
 
 
