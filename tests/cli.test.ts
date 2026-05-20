@@ -127,6 +127,52 @@ describe('cli', () => {
     expect(output.join('\n')).toContain('relay-a https://a.example.com/v1 cooldown quota until');
   });
 
+  it('marks active account leases in the account list', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
+    await program.parseAsync(['node', 'codex-relay', 'add', 'relay-b', '--key', 'sk-b', '--base-url', 'https://b.example.com/v1']);
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        currentIndex: 0,
+        retryAvailability: {},
+        leases: {
+          active: {
+            accountName: 'relay-a',
+            ownerId: 'active',
+            pid: 1,
+            startedAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+            expiresAt: '2099-01-01T00:00:00.000Z'
+          },
+          expired: {
+            accountName: 'relay-b',
+            ownerId: 'expired',
+            pid: 1,
+            startedAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+            expiresAt: '2026-05-19T00:01:00.000Z'
+          }
+        },
+        updatedAt: '2026-05-19T00:00:00.000Z'
+      }),
+      'utf8'
+    );
+
+    await program.parseAsync(['node', 'codex-relay', 'list']);
+
+    const text = output.join('\n');
+    expect(text).toContain('relay-a https://a.example.com/v1 active in-use');
+    expect(text).toContain('relay-b https://b.example.com/v1 active');
+    expect(text).not.toContain('relay-b https://b.example.com/v1 active in-use');
+  });
+
   it('prompts for missing add fields and stores the optional model', async () => {
     promptInput
       .mockResolvedValueOnce('sk-prompt')
