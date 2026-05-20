@@ -47,24 +47,6 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.release.outputs.release_created && steps.release.outputs.sha || github.sha }}
 
-      - name: Sync major and minor tags
-        if: ${{ steps.release.outputs.release_created }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          MAJOR_TAG="v${{ steps.release.outputs.major }}"
-          MINOR_TAG="v${{ steps.release.outputs.major }}.${{ steps.release.outputs.minor }}"
-          RELEASE_SHA="${{ steps.release.outputs.sha }}"
-
-          git tag -d "$MAJOR_TAG" || true
-          git tag -d "$MINOR_TAG" || true
-          git push origin ":refs/tags/$MAJOR_TAG" ":refs/tags/$MINOR_TAG" || true
-          git tag -a "$MAJOR_TAG" "$RELEASE_SHA" -m "Release $MAJOR_TAG"
-          git tag -a "$MINOR_TAG" "$RELEASE_SHA" -m "Release $MINOR_TAG"
-          git push origin "$MAJOR_TAG" "$MINOR_TAG"
-
       - name: Setup pnpm
         if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
         uses: pnpm/action-setup@v4
