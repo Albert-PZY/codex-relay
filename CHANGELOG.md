@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/Albert-PZY/codex-relay/compare/v0.3.4...v0.4.0) (2026-05-20)
+
+
+### Features
+
+* manage relay account pool state ([924dfce](https://github.com/Albert-PZY/codex-relay/commit/924dfce5582a7d952a2fe19c889a70b41a50d941))
+* run codex with automatic relay rotation ([b254a4c](https://github.com/Albert-PZY/codex-relay/commit/b254a4c4112e591665a8e8dd9e6933ed8763b49c))
+
 ## [0.3.4](https://github.com/Albert-PZY/codex-relay/compare/v0.3.3...v0.3.4) (2026-05-20)
 
 
