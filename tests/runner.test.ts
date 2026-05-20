@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
-import { rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addAccount } from '../src/core/accounts.js';
@@ -10,6 +10,7 @@ import {
   buildCodexArgs,
   buildCodexEnv,
   createDefaultProcessAdapter,
+  resolveCodexSpawnTarget,
   runManagedCodex,
   type ProcessAdapter,
   type ProcessHandle
@@ -134,6 +135,84 @@ describe('runner', () => {
     expect(adapter).toHaveProperty('spawn');
   });
 
+  it('resolves the npm codex shim before stale Windows executables', async () => {
+    const binDir = join(tmpDir, 'bin');
+    const scriptPath = join(binDir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+    const staleDir = join(tmpDir, 'stale');
+    await mkdir(join(binDir, 'node_modules', '@openai', 'codex', 'bin'), { recursive: true });
+    await mkdir(staleDir, { recursive: true });
+    await writeFile(join(binDir, 'codex.cmd'), '@echo off\r\n');
+    await writeFile(scriptPath, 'console.log("new codex")\n');
+    await writeFile(join(staleDir, 'codex.exe'), '');
+
+    const target = resolveCodexSpawnTarget(
+      { Path: `${binDir};${staleDir}` },
+      'win32'
+    );
+
+    expect(target).toEqual({
+      command: process.execPath,
+      argsPrefix: [scriptPath]
+    });
+  });
+
+  it('uses an explicit codex path when CODEX_RELAY_CODEX_PATH is set', () => {
+    const target = resolveCodexSpawnTarget(
+      { CODEX_RELAY_CODEX_PATH: 'C:\\Tools\\codex.exe' },
+      'win32'
+    );
+
+    expect(target).toEqual({
+      command: 'C:\\Tools\\codex.exe',
+      argsPrefix: []
+    });
+  });
+
+  it('falls back cleanly when no Windows codex path is found', () => {
+    expect(resolveCodexSpawnTarget({}, 'win32')).toEqual({
+      command: 'codex',
+      argsPrefix: []
+    });
+    expect(resolveCodexSpawnTarget({ PATH: ' ; "C:\\Missing" ; ' }, 'win32')).toEqual({
+      command: 'codex',
+      argsPrefix: []
+    });
+    expect(resolveCodexSpawnTarget({ PATH: '/usr/local/bin' }, 'linux')).toEqual({
+      command: 'codex',
+      argsPrefix: []
+    });
+  });
+
+  it('resolves Windows codex.cmd shims without npm scripts through the shell', async () => {
+    const binDir = join(tmpDir, 'cmd-only');
+    const cmdPath = join(binDir, 'codex.cmd');
+    await mkdir(binDir, { recursive: true });
+    await writeFile(cmdPath, '@echo off\r\n');
+
+    expect(resolveCodexSpawnTarget({ PATH: binDir }, 'win32')).toEqual({
+      command: cmdPath,
+      argsPrefix: [],
+      shell: true
+    });
+    expect(resolveCodexSpawnTarget({ CODEX_RELAY_CODEX_PATH: cmdPath }, 'win32')).toEqual({
+      command: cmdPath,
+      argsPrefix: [],
+      shell: true
+    });
+  });
+
+  it('falls back to Windows codex.exe when no npm shim is present', async () => {
+    const binDir = join(tmpDir, 'exe-only');
+    const exePath = join(binDir, 'codex.exe');
+    await mkdir(binDir, { recursive: true });
+    await writeFile(exePath, '');
+
+    expect(resolveCodexSpawnTarget({ Path: binDir }, 'win32')).toEqual({
+      command: exePath,
+      argsPrefix: []
+    });
+  });
+
   it('uses the pty adapter when loading succeeds', () => {
     const spawned: Array<{ command: string; args: string[]; options: { cwd: string; env: NodeJS.ProcessEnv } }> = [];
     const writes: string[] = [];
@@ -173,6 +252,39 @@ describe('runner', () => {
     expect(resizes).toEqual([{ cols: 101, rows: 33 }]);
   });
 
+  it('launches the resolved npm codex script from the pty adapter on Windows', async () => {
+    const binDir = join(tmpDir, 'pty-bin');
+    const scriptPath = join(binDir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+    await mkdir(join(binDir, 'node_modules', '@openai', 'codex', 'bin'), { recursive: true });
+    await writeFile(join(binDir, 'codex.cmd'), '@echo off\r\n');
+    await writeFile(scriptPath, 'console.log("new codex")\n');
+
+    const spawned: Array<{ command: string; args: string[] }> = [];
+    const fakePtyModule = {
+      spawn(command: string, args: string[]) {
+        spawned.push({ command, args });
+        return {
+          onData: () => undefined,
+          onExit: () => undefined,
+          kill: () => undefined,
+          write: () => undefined,
+          resize: () => undefined
+        };
+      }
+    };
+    const adapter = createDefaultProcessAdapter(() => fakePtyModule as unknown as typeof import('node-pty'));
+
+    adapter.spawn('codex', ['--version'], {
+      env: { Path: binDir }
+    });
+
+    const expected =
+      process.platform === 'win32'
+        ? { command: process.execPath, args: [scriptPath, '--version'] }
+        : { command: 'codex', args: ['--version'] };
+    expect(spawned).toEqual([expected]);
+  });
+
   it('runs through the node process adapter fallback', async () => {
     const adapter = createDefaultProcessAdapter(() => {
       throw new Error('pty missing');
@@ -192,6 +304,24 @@ describe('runner', () => {
     expect(exit.exitCode).toBe(0);
     expect(data.join('')).toContain('node-ok');
     expect(data.join('')).toContain('node-err');
+  });
+
+  it('launches an explicit codex command from the node process adapter', async () => {
+    const adapter = createDefaultProcessAdapter(() => {
+      throw new Error('pty missing');
+    });
+    const data: string[] = [];
+    const handle = adapter.spawn('codex', ['--version'], {
+      env: { ...process.env, CODEX_RELAY_CODEX_PATH: process.execPath }
+    });
+
+    const exit = await new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      handle.onData((chunk) => data.push(chunk));
+      handle.onExit(resolve);
+    });
+
+    expect(exit.exitCode).toBe(0);
+    expect(data.join('')).toContain(process.version);
   });
 
   it('rejects interactive TUI runs when node-pty is unavailable', async () => {

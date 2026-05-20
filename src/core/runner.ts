@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { spawn as spawnChild } from 'node:child_process';
+import { statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { loadAccountsFile, saveAccountsFile } from './accounts.js';
@@ -34,6 +35,12 @@ export interface SpawnOptions {
   env: NodeJS.ProcessEnv;
   cols?: number;
   rows?: number;
+}
+
+export interface CodexSpawnTarget {
+  command: string;
+  argsPrefix: string[];
+  shell?: boolean;
 }
 
 export interface RunnerDependencies {
@@ -95,6 +102,88 @@ const codexOptionsWithValue = new Set([
   '-i',
   '--image'
 ]);
+
+export function resolveCodexSpawnTarget(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): CodexSpawnTarget {
+  const explicitPath = env.CODEX_RELAY_CODEX_PATH?.trim();
+  if (explicitPath) {
+    return resolveExplicitCodexTarget(explicitPath, platform);
+  }
+
+  if (platform !== 'win32') {
+    return { command: 'codex', argsPrefix: [] };
+  }
+
+  const pathValue = getEnvPath(env);
+  if (!pathValue) {
+    return { command: 'codex', argsPrefix: [] };
+  }
+
+  for (const entry of splitPathEntries(pathValue, platform)) {
+    const cmdShim = join(entry, 'codex.cmd');
+    if (isFile(cmdShim)) {
+      const script = resolveNpmCodexScript(entry);
+      if (script) {
+        return { command: process.execPath, argsPrefix: [script] };
+      }
+      return { command: cmdShim, argsPrefix: [], shell: true };
+    }
+
+    const exe = join(entry, 'codex.exe');
+    if (isFile(exe)) {
+      return { command: exe, argsPrefix: [] };
+    }
+  }
+
+  return { command: 'codex', argsPrefix: [] };
+}
+
+function resolveExplicitCodexTarget(command: string, platform: NodeJS.Platform): CodexSpawnTarget {
+  if (platform === 'win32' && command.toLowerCase().endsWith('.cmd')) {
+    const script = resolveNpmCodexScript(dirname(command));
+    if (script) {
+      return { command: process.execPath, argsPrefix: [script] };
+    }
+    return { command, argsPrefix: [], shell: true };
+  }
+  return { command, argsPrefix: [] };
+}
+
+function getEnvPath(env: NodeJS.ProcessEnv): string | undefined {
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === 'path') {
+      return env[key];
+    }
+  }
+  return undefined;
+}
+
+function splitPathEntries(pathValue: string, platform: NodeJS.Platform): string[] {
+  const separator = platform === 'win32' ? ';' : ':';
+  return pathValue
+    .split(separator)
+    .map((entry) => entry.trim().replace(/^"|"$/g, ''))
+    .filter(Boolean);
+}
+
+function resolveNpmCodexScript(binDir: string): string | undefined {
+  const script = join(binDir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+  return isFile(script) ? script : undefined;
+}
+
+function resolveProcessSpawnTarget(command: string, env: NodeJS.ProcessEnv): CodexSpawnTarget {
+  return command === 'codex' ? resolveCodexSpawnTarget(env) : { command, argsPrefix: [] };
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
 
 export function buildCodexEnv(
   account: RelayAccount,
@@ -428,7 +517,8 @@ class PtyProcessAdapter implements ProcessAdapter {
   constructor(private readonly ptyModule: NodePtyModule) {}
 
   spawn(command: string, args: string[], options: SpawnOptions): ProcessHandle {
-    const terminal = this.ptyModule.spawn(command, args, {
+    const target = resolveProcessSpawnTarget(command, options.env);
+    const terminal = this.ptyModule.spawn(target.command, [...target.argsPrefix, ...args], {
       cwd: options.cwd ?? process.cwd(),
       env: options.env,
       cols: options.cols ?? 80,
@@ -471,7 +561,8 @@ class NodeProcessAdapter implements ProcessAdapter {
   public readonly supportsInteractiveTui = false;
 
   spawn(command: string, args: string[], options: SpawnOptions): ProcessHandle {
-    return new ChildProcessHandle(command, args, options);
+    const target = resolveProcessSpawnTarget(command, options.env);
+    return new ChildProcessHandle(target.command, [...target.argsPrefix, ...args], options, target.shell === true);
   }
 }
 
@@ -481,13 +572,15 @@ class ChildProcessHandle extends EventEmitter implements ProcessHandle {
   constructor(
     private readonly command: string,
     private readonly args: string[],
-    private readonly options: SpawnOptions
+    private readonly options: SpawnOptions,
+    private readonly shell: boolean
   ) {
     super();
     this.child = spawnChild(this.command, this.args, {
       cwd: this.options.cwd,
       env: this.options.env,
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: this.shell
     });
     this.child.stdout?.on('data', (chunk: Buffer) => this.emit('data', chunk.toString('utf8')));
     this.child.stderr?.on('data', (chunk: Buffer) => this.emit('data', chunk.toString('utf8')));
