@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/Albert-PZY/codex-relay/compare/v0.3.5...v0.4.0) (2026-05-20)
+
+
+### Features
+
+* show active relay account ([#26](https://github.com/Albert-PZY/codex-relay/issues/26)) ([882f3fa](https://github.com/Albert-PZY/codex-relay/commit/882f3fa386b4995fd3121fd2e7767b2d8a4d0b9e))
+
 ## [0.3.5](https://github.com/Albert-PZY/codex-relay/compare/v0.3.4...v0.3.5) (2026-05-20)
 
 
