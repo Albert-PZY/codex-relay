@@ -1,0 +1,47 @@
+# Codex Relay Design
+
+**Status:** Approved
+**Date:** 2026-05-18
+
+## Goal
+
+Build a lightweight Node.js CLI that manages multiple relay API keys/base URLs for the official Codex CLI, automatically rotates accounts when the current relay cannot continue, and resumes the interrupted conversation with minimal user setup.
+
+## Architecture
+
+The package exposes a global `codex-relay` binary. Management commands read and write `~/.codex-relay/accounts.json` and `~/.codex-relay/state.json`. Managed Codex runs launch the official `codex` executable as a child process, override `OPENAI_API_KEY`, and pass `-c openai_base_url="<baseUrl>"` so the user's `~/.codex` directory remains untouched.
+
+The runner keeps output passthrough simple. It watches child output with a conservative detector. High-confidence quota or unusable-environment messages trigger immediate rotation. Medium-confidence messages rotate only when the child exits unsuccessfully. After rotation, the runner restarts Codex with `resume <session-id> Continue` when it can identify a session id, otherwise it falls back to `resume --last Continue` only when explicit session discovery is unavailable.
+
+## CLI Surface
+
+- `codex-relay [...codexArgs]` starts a managed Codex session.
+- `codex-relay --account <name> [...codexArgs]` starts from a named relay account.
+- `codex-relay add <name> --key <key> --base-url <url> [--model <model>]` adds or updates an account non-interactively.
+- `codex-relay add <name>` prompts for missing values.
+- `codex-relay list` prints account names, relay URLs, default marker, and retry status.
+- `codex-relay remove <name>` removes an account and repairs preferred/default state.
+- `codex-relay use <name>` marks an account as the preferred starting account.
+- `codex-relay import <file>` imports relay accounts from a JSON top-level array of flat account objects.
+- `codex-relay setup [file]` imports `data.json` by default and uses the same JSON-only import path.
+- `codex-relay test [name]` checks one or all accounts through a lightweight OpenAI-compatible `/models` request.
+
+## Data Contract
+
+`accounts.json` is versioned and contains account records with unique names, API keys, base URLs, optional model names, and timestamps. `state.json` stores the current index, last successful account, exhausted accounts for the current run, retry availability, and updated timestamp. Writes use temporary files plus rename. Import files are JSON arrays where each item has `baseUrl`, `apiKey`, optional `name`, and optional `model`.
+
+Local files containing secrets are ignored by git: `data.txt`, `data.json`, `.env*`, and local runtime data.
+
+## Error Handling
+
+Detector output is normalized by stripping ANSI escape sequences and retaining a rolling buffer. Custom quota strings from config are supported. Rotation skips accounts marked unavailable until their retry timestamp has passed. If no account remains, the CLI restores terminal state, prints a clear message, and exits non-zero.
+
+Account management commands validate duplicate names, valid URLs, and non-empty keys. Test commands report individual account status without exposing full API keys.
+
+## Packaging And Release
+
+The repository uses Node.js `>=22 <23`, TypeScript, ESM, pnpm, commander, zod, node-pty, strip-ansi, and vitest. GitHub Actions run install, lint, test, build, and pack checks on pull requests and main. Releases use release-please with Conventional Commits; published GitHub releases trigger npm publishing with provenance.
+
+## Documentation
+
+`README.md` explains install, quick start, account import, managed run, rotation limits, and security notes. `CONTRIBUTING.md` defines Conventional Commits, branch discipline, pnpm-only workflow, and functional commit grouping. `.gitignore` excludes sensitive local files and generated build output.
