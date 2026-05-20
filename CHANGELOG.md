@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/Albert-PZY/codex-relay/compare/v0.4.1...v0.5.0) (2026-05-20)
+
+
+### Features
+
+* add bilingual cli help ([#30](https://github.com/Albert-PZY/codex-relay/issues/30)) ([146a1f2](https://github.com/Albert-PZY/codex-relay/commit/146a1f23ff775b118fcdc9f35d93747066465891))
+
 ## [0.4.1](https://github.com/Albert-PZY/codex-relay/compare/v0.4.0...v0.4.1) (2026-05-20)
 
 
