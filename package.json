@@ -1,6 +1,6 @@
 {
   "name": "codex-relay-cli",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Lightweight relay account pool manager for the Codex CLI.",
   "type": "module",
   "bin": {

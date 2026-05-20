@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/Albert-PZY/codex-relay/compare/v0.3.3...v0.3.4) (2026-05-20)
+
+
+### Bug Fixes
+
+* resolve codex npm shim on windows ([#20](https://github.com/Albert-PZY/codex-relay/issues/20)) ([8d2999b](https://github.com/Albert-PZY/codex-relay/commit/8d2999b899a76c39ec18c199758589225a632689))
+
 ## [0.3.3](https://github.com/Albert-PZY/codex-relay/compare/v0.3.2...v0.3.3) (2026-05-19)
 
 
