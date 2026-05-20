@@ -39,26 +39,31 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .name('codex-relay')
-    .description('Relay account pool manager for the Codex CLI')
-    .version(getPackageVersion(), '-v, --version', 'display codex-relay version')
+    .usage('[options] [codex args...]')
+    .description('Codex CLI relay account-pool manager with automatic rotation.\nCodex CLI 中转站号池管理和自动切号工具。')
+    .version(getPackageVersion(), '-v, --version', 'Display codex-relay version / 显示 codex-relay 版本')
+    .helpOption('-h, --help', 'Display help for command / 显示帮助信息')
+    .option('--account <name>', 'Use a specific relay account for this run / 本次运行指定账号')
     .allowUnknownOption(true)
     .allowExcessArguments(true)
-    .exitOverride();
+    .exitOverride()
+    .addHelpText('after', formatHelpDetails());
 
   program
     .command('version')
-    .description('Show the codex-relay version')
+    .description('Show codex-relay version / 显示 codex-relay 版本')
     .action(() => {
       output(getPackageVersion());
     });
 
   program
     .command('add')
+    .description('Add a relay account / 添加中转站账号')
     .argument('<name>')
-    .option('--key <key>')
-    .option('--base-url <url>')
-    .option('--model <model>')
-    .option('--overwrite')
+    .option('--key <key>', 'API key / API key')
+    .option('--base-url <url>', 'Relay base URL / 中转站 base URL')
+    .option('--model <model>', 'Model used by this account / 该账号使用的模型')
+    .option('--overwrite', 'Overwrite an existing account with the same name / 覆盖同名账号')
     .action(async (name: string, options: { key?: string; baseUrl?: string; model?: string; overwrite?: boolean }) => {
       const account = await resolveAccountInput(name, options);
       await addAccount(paths.accounts, account, { overwrite: Boolean(options.overwrite) });
@@ -67,6 +72,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .command('list')
+    .description('List accounts and health status / 查看账号和健康状态')
     .action(async () => {
       const file = await loadAccountsFile(paths.accounts);
       const state = await loadStateFile(paths.state);
@@ -85,6 +91,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .command('remove')
+    .description('Remove an account / 删除账号')
     .argument('<name>')
     .action(async (name: string) => {
       await removeAccount(paths.accounts, name);
@@ -93,6 +100,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .command('use')
+    .description('Set the preferred account / 设置默认优先账号')
     .argument('<name>')
     .action(async (name: string) => {
       await setPreferredAccount(paths.accounts, name);
@@ -101,6 +109,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .command('import')
+    .description('Import accounts from JSON / 从 JSON 导入账号')
     .argument('<file>')
     .action(async (filePath: string) => {
       const accounts = await importAccountsFromFile(filePath);
@@ -110,6 +119,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .command('setup')
+    .description('Initialize the account pool from JSON / 从 JSON 初始化号池')
     .argument('[file]', 'setup file path', 'data.json')
     .action(async (filePath: string) => {
       const accounts = await importAccountsFromFile(filePath);
@@ -120,6 +130,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .command('test')
+    .description('Run a lightweight relay check / 轻量预检账号')
     .argument('[name]')
     .action(async (name?: string) => {
       const file = await loadAccountsFile(paths.accounts);
@@ -135,6 +146,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .command('health')
+    .description('Show account health records / 查看账号健康记录')
     .action(async () => {
       const file = await loadAccountsFile(paths.accounts);
       const health = await loadHealthFile(resolveHealthPath(paths));
@@ -152,13 +164,13 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     });
 
   program.action(async () => {
-    const passthrough = parsePassthroughArgs(program.args);
+    const options = program.opts<{ account?: string }>();
     await autoSetupFromDefaultFile(paths.accounts, output);
     const runnerOptions: RunnerOptions = {
-      codexArgs: passthrough.codexArgs
+      codexArgs: program.args
     };
-    if (passthrough.accountName) {
-      runnerOptions.accountName = passthrough.accountName;
+    if (options.account) {
+      runnerOptions.accountName = options.account;
     }
     const result = await runManagedCodex(runnerOptions, {
       paths,
@@ -194,6 +206,38 @@ function getPackageVersion(): string {
   const require = createRequire(import.meta.url);
   const manifest = require('../package.json') as { version?: unknown };
   return typeof manifest.version === 'string' ? manifest.version : '0.0.0';
+}
+
+function formatHelpDetails(): string {
+  return `
+Examples / 示例:
+  $ codex-relay setup ./accounts.json
+    Initialize the pool from JSON.
+    从 JSON 文件初始化号池。
+
+  $ codex-relay
+    Start Codex with an injected relay account.
+    启动 Codex，并自动注入号池账号。
+
+  $ codex-relay "fix this bug"
+    Run a Codex task with automatic rotation and resume.
+    执行 Codex 任务，失败时自动切号并恢复上下文。
+
+  $ codex-relay --account relay-a "continue"
+    Use one account only for this run.
+    本次运行临时指定账号。
+
+JSON import format / JSON 导入格式:
+  [
+    { "baseUrl": "https://relay.example.com/v1", "apiKey": "sk-xxx", "name": "relay-a", "model": "gpt-5.2" }
+  ]
+
+Notes / 说明:
+  - "name" and "model" are optional. Duplicate credentials are skipped automatically.
+    "name" 和 "model" 可选，重复账号会自动跳过。
+  - Unknown arguments are forwarded to Codex after codex-relay handles its own options.
+    未识别参数会在 codex-relay 处理自身参数后继续传给 Codex。
+`;
 }
 
 async function resolveAccountInput(
@@ -236,29 +280,6 @@ async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function parsePassthroughArgs(args: string[]): { accountName?: string; codexArgs: string[] } {
-  const codexArgs: string[] = [];
-  let accountName: string | undefined;
-
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === '--account') {
-      accountName = args[index + 1];
-      index += 1;
-      continue;
-    }
-    if (arg?.startsWith('--account=')) {
-      accountName = arg.slice('--account='.length);
-      continue;
-    }
-    if (arg !== undefined) {
-      codexArgs.push(arg);
-    }
-  }
-
-  return accountName ? { accountName, codexArgs } : { codexArgs };
 }
 
 function outputImportSummary(

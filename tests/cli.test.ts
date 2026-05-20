@@ -57,6 +57,38 @@ describe('cli', () => {
     expect(output).toEqual([await readPackageVersion()]);
   });
 
+  it('prints codex-relay help without launching codex', async () => {
+    const output: string[] = [];
+    const runManagedCodex = vi.fn(async () => ({
+      exitCode: 0,
+      signal: null,
+      usedAccount: 'relay-a'
+    }));
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: (text) => output.push(text),
+      runManagedCodex
+    });
+
+    await expect(program.parseAsync(['node', 'codex-relay', '--help'])).rejects.toMatchObject({
+      code: 'commander.helpDisplayed'
+    });
+
+    const text = output.join('\n');
+    expect(text).toContain('Usage: codex-relay [options] [codex args...]');
+    expect(text).toContain('Codex CLI relay account-pool manager with automatic rotation.');
+    expect(text).toContain('Codex CLI 中转站号池管理和自动切号工具。');
+    expect(text).toContain('Options:');
+    expect(text).toContain('--account <name>');
+    expect(text).toContain('Commands:');
+    expect(text).toContain('Examples / 示例:');
+    expect(text).toContain('JSON import format / JSON 导入格式:');
+    expect(text).toContain('Notes / 说明:');
+    expect(text).toContain('Initialize the account pool from JSON / 从 JSON 初始化号池');
+    expect(text).toContain('Show account health records / 查看账号健康记录');
+    expect(runManagedCodex).not.toHaveBeenCalled();
+  });
+
   it('adds, lists, uses, and removes accounts', async () => {
     const output: string[] = [];
     const program = createCliProgram({
