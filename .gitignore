@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+.turbo/
+.vite/
+
+.env
+.env.*
+!.env.example
+
+data.txt
+data.json
+切号工具.md
+
+.codex-relay/
+*.log
+*.tmp
