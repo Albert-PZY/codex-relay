@@ -338,6 +338,7 @@ export async function runManagedCodex(
       attemptArgs.resume = sessionId ? { sessionId, prompt: 'Continue' } : { prompt: 'Continue' };
     }
 
+    output(formatAccountNotice(account, attemptArgs.resume !== undefined));
     const result = await runAttempt(attemptArgs);
 
     sessionId = result.sessionId ?? sessionId;
@@ -422,6 +423,23 @@ function findNextAvailableAccountName(
 function formatRotationNotice(from: string, to: string | undefined, reason: HealthFailureReason): string {
   const target = to ?? 'no available account';
   return `\n[codex-relay] ${from} failed (${reason}); switching to ${target} and resuming the conversation.\n`;
+}
+
+function formatAccountNotice(account: RelayAccount, isResume: boolean): string {
+  const action = isResume ? 'resuming with' : 'using';
+  const model = account.model ? `, model ${account.model}` : '';
+  return `\n[codex-relay] ${action} ${account.name} (key ${maskApiKey(account.apiKey)}, baseUrl ${account.baseUrl}${model}).\n`;
+}
+
+function maskApiKey(apiKey: string): string {
+  const key = apiKey.trim();
+  if (key.length <= 4) {
+    return '****';
+  }
+  if (key.length <= 8) {
+    return `${key.slice(0, 2)}...${key.slice(-2)}`;
+  }
+  return `${key.slice(0, 3)}...${key.slice(-4)}`;
 }
 
 interface RunAttemptArgs {

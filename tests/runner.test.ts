@@ -427,6 +427,34 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('Continue');
   });
 
+  it('shows the current relay account with a masked key before launching codex', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-1234567890abcdef',
+      baseUrl: 'https://a.example.com/v1',
+      model: 'gpt-5.2'
+    });
+
+    const output: string[] = [];
+    const adapter = new FakeAdapter([['ok\n']]);
+
+    await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: (chunk) => output.push(chunk)
+      }
+    );
+
+    const text = output.join('');
+    expect(text).toContain('[codex-relay] using relay-a');
+    expect(text).toContain('key sk-...cdef');
+    expect(text).toContain('baseUrl https://a.example.com/v1');
+    expect(text).toContain('model gpt-5.2');
+    expect(text).not.toContain('sk-1234567890abcdef');
+  });
+
   it('falls back to resume --last when no session id is detected', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
@@ -495,6 +523,7 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('resume');
     expect(adapter.spawns[1]?.args).toContain('--last');
     expect(output.join('')).toContain('[codex-relay] relay-a failed (quota); switching to relay-b');
+    expect(output.join('')).toContain('[codex-relay] resuming with relay-b');
   });
 
   it('keeps non-interactive exec mode when resuming after rotation', async () => {
