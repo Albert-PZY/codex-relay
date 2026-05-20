@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { spawn as spawnChild } from 'node:child_process';
 import { statSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { loadAccountsFile, saveAccountsFile } from './accounts.js';
@@ -286,6 +287,7 @@ export async function runManagedCodex(
   const now = dependencies.now ?? (() => new Date());
   const healthPath = resolveHealthPath(paths);
   const codexHome = resolveCodexHomePath(paths);
+  await mkdir(codexHome, { recursive: true });
   let accountsFile = await loadAccountsFile(paths.accounts);
 
   if (accountsFile.accounts.length === 0) {
