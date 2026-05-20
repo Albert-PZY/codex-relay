@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/Albert-PZY/codex-relay/compare/v0.6.0...v0.6.1) (2026-05-20)
+
+
+### Performance Improvements
+
+* slim runtime state and dependencies ([5707569](https://github.com/Albert-PZY/codex-relay/commit/570756913cb210ee0da4cfecc5fc87c308e5129b))
+
 ## [0.6.0](https://github.com/Albert-PZY/codex-relay/compare/v0.5.0...v0.6.0) (2026-05-20)
 
 
