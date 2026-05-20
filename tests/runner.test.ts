@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addAccount } from '../src/core/accounts.js';
@@ -524,6 +524,29 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('--last');
     expect(output.join('')).toContain('[codex-relay] relay-a failed (quota); switching to relay-b');
     expect(output.join('')).toContain('[codex-relay] resuming with relay-b');
+  });
+
+  it('creates the relay-owned codex home before launching codex', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+
+    const codexHome = join(tmpDir, 'missing-codex-home');
+    const adapter = new FakeAdapter([['ok\n']]);
+
+    await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, codexHome },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect((await stat(codexHome)).isDirectory()).toBe(true);
+    expect(adapter.spawns[0]?.env.CODEX_HOME).toBe(codexHome);
   });
 
   it('keeps non-interactive exec mode when resuming after rotation', async () => {
