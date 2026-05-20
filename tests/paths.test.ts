@@ -10,5 +10,6 @@ describe('path utilities', () => {
     expect(paths.accounts).toBe(join('C:/tmp/relay', 'accounts.json'));
     expect(paths.state).toBe(join('C:/tmp/relay', 'state.json'));
     expect(paths.health).toBe(join('C:/tmp/relay', 'health.json'));
+    expect(paths.codexHome).toBe(join('C:/tmp/relay', 'codex-home'));
   });
 });

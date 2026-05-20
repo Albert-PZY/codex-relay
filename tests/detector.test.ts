@@ -20,6 +20,17 @@ describe('quota detector', () => {
     });
   });
 
+  it('detects payload and tier limit failures as quota signals', () => {
+    expect(
+      detectOutput(
+        'unexpected status 413 Payload Too Large: Request body exceeds your tier limit (3MB for tier 0)'
+      )
+    ).toMatchObject({
+      confidence: 'high',
+      reason: 'quota'
+    });
+  });
+
   it('detects medium-confidence rate-limit signals', () => {
     expect(detectOutput('Too many requests, please try again later')).toMatchObject({
       confidence: 'medium',
