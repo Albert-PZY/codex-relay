@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.5](https://github.com/Albert-PZY/codex-relay/compare/v0.3.4...v0.3.5) (2026-05-20)
+
+
+### Bug Fixes
+
+* rotate on payload limit failures ([#24](https://github.com/Albert-PZY/codex-relay/issues/24)) ([89fa26c](https://github.com/Albert-PZY/codex-relay/commit/89fa26c9b0039d28a8c940b7fba05e9199aaa6a5))
+
 ## [0.3.4](https://github.com/Albert-PZY/codex-relay/compare/v0.3.3...v0.3.4) (2026-05-20)
 
 
