@@ -6,7 +6,7 @@
 
 **Architecture:** A TypeScript ESM CLI manages local account/state JSON files and launches the official Codex CLI through an injectable process adapter. Core behavior is split into store, detector, rotator, runner, CLI, and utility modules with unit tests covering each boundary.
 
-**Tech Stack:** Node.js 22, TypeScript, pnpm, commander, zod, node-pty, strip-ansi, vitest, tsx.
+**Tech Stack:** Node.js 22, TypeScript, pnpm, commander, zod, node-pty, vitest, tsx.
 
 ---
 
@@ -71,7 +71,7 @@
 - Create: `tests/accounts.test.ts`
 - Create: `tests/state.test.ts`
 
-- [ ] Write failing tests for account CRUD, validation, import parsing, preferred repair, and state persistence.
+- [ ] Write failing tests for account CRUD, validation, import parsing, preferred updates, and state persistence.
 - [ ] Implement zod schemas and store helpers.
 - [ ] Run focused tests, then full tests.
 - [ ] Commit with `feat: manage relay accounts and state`.

@@ -8,18 +8,14 @@ import { dirname, join } from 'node:path';
 import { loadAccountsFile, saveAccountsFile } from './accounts.js';
 import { detectOutput, extractSessionId } from './detector.js';
 import {
-  loadHealthFile,
   recordAccountFailure,
   recordAccountSuccess,
   retireExpiredHealthAccounts
 } from './health.js';
 import {
   loadStateFile,
-  markRetryAvailability,
   pruneExpiredLeases,
-  removeAccountLease,
-  saveStateFile,
-  updateSuccessfulAccount
+  saveStateFile
 } from './state.js';
 import { buildRotationOrder, getAccountByName, getAccountIndex, isAccountAvailable } from './rotator.js';
 import { withStoreLock } from './store-lock.js';
@@ -429,6 +425,7 @@ async function reserveNextAccountLocked(input: ReserveNextInput): Promise<Reserv
 
   const currentTime = input.now();
   const retirement = await retireExpiredHealthAccounts(input.healthPath, accountsFile, currentTime);
+  const health = retirement.health;
   if (retirement.retiredNames.length > 0) {
     accountsFile = retirement.accountsFile;
     await saveAccountsFile(input.paths.accounts, accountsFile);
@@ -438,7 +435,6 @@ async function reserveNextAccountLocked(input: ReserveNextInput): Promise<Reserv
   }
 
   const state = await loadPrunedState(input.paths, currentTime);
-  const health = await loadHealthFile(input.healthPath);
   const selected = selectLeaseAwareAccount({
     accountsFile,
     state,
@@ -478,7 +474,6 @@ async function reserveNextAccountLocked(input: ReserveNextInput): Promise<Reserv
 async function recordFailedAttemptAndReserveNext(input: FailureReserveInput): Promise<ReservedAccount | undefined> {
   return withStoreLock(input.paths, async () => {
     const failureAt = input.now();
-    let accountsFile = await loadAccountsFile(input.paths.accounts);
     await recordAccountFailure(input.healthPath, {
       accountName: input.failedAccount.name,
       baseUrl: input.failedAccount.baseUrl,
@@ -486,20 +481,6 @@ async function recordFailedAttemptAndReserveNext(input: FailureReserveInput): Pr
       now: failureAt,
       ...(input.result.retryAfterMs !== undefined ? { retryAfterMs: input.result.retryAfterMs } : {})
     });
-
-    const latestRetirement = await retireExpiredHealthAccounts(input.healthPath, accountsFile, failureAt);
-    if (latestRetirement.retiredNames.length > 0) {
-      accountsFile = latestRetirement.accountsFile;
-      await saveAccountsFile(input.paths.accounts, accountsFile);
-    }
-
-    if (input.result.retryAfterMs) {
-      const availableAt = new Date(failureAt.getTime() + input.result.retryAfterMs);
-      await markRetryAvailability(input.paths.state, input.failedAccount.name, {
-        displayText: availableAt.toLocaleString(),
-        availableAt: availableAt.toISOString()
-      });
-    }
 
     return reserveNextAccountLocked(input);
   });
@@ -514,14 +495,30 @@ async function recordSuccessfulAttempt(
   await withStoreLock(paths, async () => {
     const accountsFile = await loadAccountsFile(paths.accounts);
     const accountIndex = getAccountIndex(accountsFile, accountName);
-    await updateSuccessfulAccount(paths.state, accountName, Math.max(0, accountIndex));
+    const state = await loadStateFile(paths.state);
+    await saveStateFile(paths.state, {
+      ...state,
+      currentIndex: Math.max(0, accountIndex),
+      lastSuccessfulAccount: accountName,
+      updatedAt: successAt.toISOString()
+    });
     await recordAccountSuccess(healthPath, accountName, successAt);
   });
 }
 
 async function releaseAccountLease(paths: RunnerDataPaths, ownerId: string): Promise<void> {
   await withStoreLock(paths, async () => {
-    await removeAccountLease(paths.state, ownerId);
+    const state = await loadStateFile(paths.state);
+    if (!state.leases[ownerId]) {
+      return;
+    }
+    const leases = { ...state.leases };
+    delete leases[ownerId];
+    await saveStateFile(paths.state, {
+      ...state,
+      leases,
+      updatedAt: new Date().toISOString()
+    });
   });
 }
 
@@ -596,7 +593,7 @@ function selectLeaseAwareAccount(input: {
       continue;
     }
     const account = getAccountByName(input.accountsFile, name);
-    if (!account || !isAccountAvailable(account.name, input.state, input.now, input.health)) {
+    if (!account || !isAccountAvailable(account.name, input.now, input.health)) {
       continue;
     }
     const shared = leasedAccountNames.has(name);

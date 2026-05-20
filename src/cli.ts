@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { access } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import {
   addAccount,
   importAccountsFromFile,
@@ -88,8 +89,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       }
       for (const account of file.accounts) {
         const marker = account.name === file.preferred ? '*' : ' ';
-        const retry = state.retryAvailability[account.name];
-        const status = retry ? `retry at ${retry.displayText}` : formatHealthStatus(health.accounts[account.name]);
+        const status = formatHealthStatus(health.accounts[account.name]);
         const leaseText = countActiveLeases(state, account.name) > 0 ? ' in-use' : '';
         output(`${marker} ${account.name} ${account.baseUrl} ${status}${leaseText}`);
       }
@@ -270,8 +270,15 @@ async function resolveAccountInput(
 }
 
 async function promptText(message: string): Promise<string> {
-  const { input } = await import('@inquirer/prompts');
-  return input({ message });
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  try {
+    return await readline.question(`${message}: `);
+  } finally {
+    readline.close();
+  }
 }
 
 async function autoSetupFromDefaultFile(

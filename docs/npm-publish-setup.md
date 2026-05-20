@@ -59,7 +59,7 @@
 
 ```bash
 git commit -m "feat: add new command"
-git commit -m "fix: repair account rotation"
+git commit -m "fix: handle account rotation"
 git commit -m "docs: update readme"
 ```
 

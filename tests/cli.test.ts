@@ -6,10 +6,14 @@ import { createCliProgram, main } from '../src/cli.js';
 import { loadAccountsFile } from '../src/core/accounts.js';
 import { recordAccountFailure } from '../src/core/health.js';
 
-const promptInput = vi.hoisted(() => vi.fn());
+const promptQuestion = vi.hoisted(() => vi.fn());
+const promptClose = vi.hoisted(() => vi.fn());
 
-vi.mock('@inquirer/prompts', () => ({
-  input: promptInput
+vi.mock('node:readline/promises', () => ({
+  createInterface: () => ({
+    question: promptQuestion,
+    close: promptClose
+  })
 }));
 
 const tmpDir = fileURLToPath(new URL('./tmp-cli/', import.meta.url));
@@ -19,7 +23,8 @@ const healthPath = join(tmpDir, 'health.json');
 
 afterEach(async () => {
   await rm(tmpDir, { recursive: true, force: true });
-  promptInput.mockReset();
+  promptQuestion.mockReset();
+  promptClose.mockReset();
   vi.restoreAllMocks();
 });
 
@@ -141,7 +146,6 @@ describe('cli', () => {
       JSON.stringify({
         version: 1,
         currentIndex: 0,
-        retryAvailability: {},
         leases: {
           active: {
             accountName: 'relay-a',
@@ -174,7 +178,7 @@ describe('cli', () => {
   });
 
   it('prompts for missing add fields and stores the optional model', async () => {
-    promptInput
+    promptQuestion
       .mockResolvedValueOnce('sk-prompt')
       .mockResolvedValueOnce('https://prompt.example.com/v1');
     const program = createCliProgram({
@@ -185,8 +189,9 @@ describe('cli', () => {
     await program.parseAsync(['node', 'codex-relay', 'add', 'relay-prompt', '--model', 'gpt-5.2']);
 
     const file = await loadAccountsFile(accountsPath);
-    expect(promptInput).toHaveBeenNthCalledWith(1, { message: 'API key' });
-    expect(promptInput).toHaveBeenNthCalledWith(2, { message: 'Base URL' });
+    expect(promptQuestion).toHaveBeenNthCalledWith(1, 'API key: ');
+    expect(promptQuestion).toHaveBeenNthCalledWith(2, 'Base URL: ');
+    expect(promptClose).toHaveBeenCalledTimes(2);
     expect(file.accounts[0]).toMatchObject({
       name: 'relay-prompt',
       apiKey: 'sk-prompt',

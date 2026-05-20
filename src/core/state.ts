@@ -1,11 +1,6 @@
 import { z } from 'zod';
 import { readJsonFile, writeJsonAtomic } from '../utils/atomic.js';
-import type { AccountLease, RetryAvailability, StateFile } from '../types.js';
-
-const retryAvailabilitySchema = z.object({
-  displayText: z.string().trim().min(1),
-  availableAt: z.string().datetime()
-});
+import type { AccountLease, StateFile } from '../types.js';
 
 const accountLeaseSchema = z.object({
   accountName: z.string().trim().min(1),
@@ -15,16 +10,15 @@ const accountLeaseSchema = z.object({
   startedAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   expiresAt: z.string().datetime()
-});
+}).strict();
 
 const stateFileSchema = z.object({
   version: z.literal(1),
   currentIndex: z.number().int().min(0),
   lastSuccessfulAccount: z.string().trim().min(1).optional(),
-  retryAvailability: z.record(z.string(), retryAvailabilitySchema),
-  leases: z.record(z.string(), accountLeaseSchema).default({}),
+  leases: z.record(z.string(), accountLeaseSchema),
   updatedAt: z.string().datetime()
-});
+}).strict();
 
 export async function loadStateFile(filePath: string): Promise<StateFile> {
   try {
@@ -40,63 +34,6 @@ export async function loadStateFile(filePath: string): Promise<StateFile> {
 
 export async function saveStateFile(filePath: string, state: StateFile): Promise<void> {
   await writeJsonAtomic(filePath, validateStateFile({ ...state, updatedAt: state.updatedAt || new Date().toISOString() }));
-}
-
-export async function updateSuccessfulAccount(
-  filePath: string,
-  accountName: string,
-  accountIndex: number
-): Promise<void> {
-  const state = await loadStateFile(filePath);
-  await saveStateFile(filePath, {
-    ...state,
-    currentIndex: accountIndex,
-    lastSuccessfulAccount: accountName,
-    updatedAt: new Date().toISOString()
-  });
-}
-
-export async function markRetryAvailability(
-  filePath: string,
-  accountName: string,
-  retryAvailability: RetryAvailability
-): Promise<void> {
-  const state = await loadStateFile(filePath);
-  await saveStateFile(filePath, {
-    ...state,
-    retryAvailability: {
-      ...state.retryAvailability,
-      [accountName]: retryAvailability
-    },
-    updatedAt: new Date().toISOString()
-  });
-}
-
-export async function saveAccountLease(filePath: string, lease: AccountLease): Promise<StateFile> {
-  const state = await loadStateFile(filePath);
-  const updated: StateFile = {
-    ...state,
-    leases: {
-      ...state.leases,
-      [lease.ownerId]: lease
-    },
-    updatedAt: lease.updatedAt
-  };
-  await saveStateFile(filePath, updated);
-  return updated;
-}
-
-export async function removeAccountLease(filePath: string, ownerId: string): Promise<StateFile> {
-  const state = await loadStateFile(filePath);
-  const leases = { ...state.leases };
-  delete leases[ownerId];
-  const updated: StateFile = {
-    ...state,
-    leases,
-    updatedAt: new Date().toISOString()
-  };
-  await saveStateFile(filePath, updated);
-  return updated;
 }
 
 export function pruneExpiredLeases(state: StateFile, now: Date): StateFile {
@@ -117,7 +54,6 @@ export function createDefaultState(): StateFile {
   return {
     version: 1,
     currentIndex: 0,
-    retryAvailability: {},
     leases: {},
     updatedAt: new Date().toISOString()
   };
@@ -131,7 +67,6 @@ function validateStateFile(raw: unknown): StateFile {
   const state: StateFile = {
     version: 1,
     currentIndex: result.data.currentIndex,
-    retryAvailability: result.data.retryAvailability,
     leases: Object.fromEntries(
       Object.entries(result.data.leases).map(([ownerId, lease]) => [ownerId, normalizeAccountLease(lease)])
     ),

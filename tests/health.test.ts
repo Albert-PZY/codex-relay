@@ -249,4 +249,21 @@ describe('health store', () => {
 
     await expect(loadHealthFile(healthPath)).rejects.toThrow(/invalid health file/i);
   });
+
+  it('rejects unknown health fields', async () => {
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      healthPath,
+      JSON.stringify({
+        version: 1,
+        accounts: {},
+        retired: [],
+        staleField: true,
+        updatedAt: '2026-05-19T00:00:00.000Z'
+      }),
+      'utf8'
+    );
+
+    await expect(loadHealthFile(healthPath)).rejects.toThrow(/invalid health file/i);
+  });
 });

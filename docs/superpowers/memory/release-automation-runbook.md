@@ -25,7 +25,7 @@ status: active
 ## Required Checks
 
 - The repository ruleset for `main` requires two status contexts: `CI` and `verify`.
-- `.github/workflows/ci.yml` therefore emits the full validation job as `CI` and a lightweight dependent compatibility job as `verify`.
+- `.github/workflows/ci.yml` therefore emits the full validation job as `CI` and a lightweight dependent status job as `verify`.
 - Keep both status names unless the GitHub ruleset is changed at the same time.
 
 ## Release Flow

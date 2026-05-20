@@ -1,4 +1,4 @@
-import stripAnsi from 'strip-ansi';
+import { stripVTControlCharacters } from 'node:util';
 import type { DetectorMatch, HealthFailureReason } from '../types.js';
 
 interface DetectionPattern {
@@ -42,7 +42,7 @@ const AVAILABLE_IN = /available\s+in\s+(\d+)\s*(second|seconds|minute|minutes)/i
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i;
 
 export function detectOutput(raw: string, customQuotaPatterns: string[] = []): DetectorMatch {
-  const output = stripAnsi(raw);
+  const output = stripVTControlCharacters(raw);
   const retryAfterMs = extractRetryAfterMs(output);
 
   for (const pattern of customQuotaPatterns) {
@@ -69,7 +69,7 @@ export function detectOutput(raw: string, customQuotaPatterns: string[] = []): D
 }
 
 export function extractSessionId(raw: string): string | undefined {
-  const output = stripAnsi(raw);
+  const output = stripVTControlCharacters(raw);
   const match = output.match(UUID);
   return match?.[0];
 }
