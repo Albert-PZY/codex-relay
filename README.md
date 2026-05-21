@@ -1,6 +1,6 @@
 # codex-relay
 
-`codex-relay` 是官方 Codex CLI 的中转站号池外壳。你只需要准备一个本地 `data.json`，里面放中转站 `baseUrl` 和对应 `apiKey`；工具会自动导入、自动去重、额度异常时自动切号，并尽量恢复上一次中断的 Codex 对话继续执行。
+`codex-relay` 是官方 Codex CLI 的中转站号池管理器。它负责维护多个 `baseUrl + apiKey` 账号，在额度耗尽、鉴权失败、限流或中转站异常时自动切换账号，并尽量恢复中断的 Codex 会话继续执行。
 
 ## 安装
 
@@ -8,15 +8,22 @@
 npm install -g codex-relay-cli
 ```
 
-需要先准备好：
+运行环境：
 
 - Node.js `>=22 <23`
-- 官方 `codex` CLI
-- 交互式 Codex TUI 需要 `node-pty` 可用；如果你的环境装不上它，请用 `codex-relay exec "任务"` 跑非交互任务
+- 本机已经安装官方 `codex` 命令
+- 交互式 Codex TUI 依赖 `node-pty`；缺少原生 PTY 时，使用 `codex-relay exec "任务"` 运行非交互任务
 
-## 第一次使用
+查看版本和帮助：
 
-在你要工作的项目根目录新建 `data.json`。文件必须是顶层数组，每一项都是一个账号对象：
+```bash
+codex-relay --version
+codex-relay --help
+```
+
+## 账号文件
+
+在要工作的项目根目录准备 `data.json`。文件必须是顶层数组，每一项都是扁平账号对象：
 
 ```json
 [
@@ -37,64 +44,85 @@ npm install -g codex-relay-cli
 ]
 ```
 
-字段规则很少：
+字段规则：
 
-- `baseUrl`：必填，中转站地址，例如 `https://relay.example.com/v1`
+- `baseUrl`：必填，中转站 OpenAI 兼容入口，例如 `https://relay.example.com/v1`
 - `apiKey`：必填，这个中转站对应的 key
-- `name`：可选，不写会自动生成，例如 `relay-example-com-1`
-- `model`：可选，指定这个账号默认使用的模型
+- `name`：可选，不写会按 `baseUrl` 自动生成，例如 `relay-example-com-1`
+- `model`：可选，这个账号默认使用的模型
 
-只支持这种 JSON 文件导入；不支持 txt、分段 `base_url`、纯 key 列表或 `{ "accounts": [...] }` 这种包一层的格式。
+导入只支持这种 JSON 数组格式；不支持 txt、分段 `base_url`、纯 key 列表或 `{ "accounts": [...] }` 这种外层包裹格式。重复账号名或重复的 `baseUrl + apiKey + model` 会自动跳过。
 
-然后直接运行：
+## 快速开始
 
 ```bash
+codex-relay setup
 codex-relay "帮我完成当前项目"
 ```
 
-如果本机号池还是空的，工具会自动读取当前目录的 `data.json` 并导入。重复运行也没关系，重复账号名或重复的 `baseUrl + apiKey + model` 会自动跳过，不需要你手工排重。
+如果本机号池还是空的，直接运行 `codex-relay "任务"` 时也会自动读取当前目录的 `data.json`。重复执行 `setup` 或自动导入不会写入重复账号。
 
 ## 常用命令
 
-```bash
-codex-relay setup                         # 导入当前目录 data.json
-codex-relay setup ./my-relays.json        # 导入指定 JSON 文件
-codex-relay import ./my-relays.json       # 同样导入 JSON 文件
-codex-relay add relay-a --key <key> --base-url <url>
-codex-relay list
-codex-relay health
-codex-relay test
-codex-relay use <name>
-codex-relay remove <name>
-codex-relay --account relay-a "继续任务"
-codex-relay "你的任务"
+| 命令 | 作用 |
+| --- | --- |
+| `codex-relay setup [file]` | 从 JSON 文件初始化号池，默认读取 `data.json` |
+| `codex-relay import <file>` | 从指定 JSON 文件导入账号 |
+| `codex-relay add <name> --key <key> --base-url <url> [--model <model>]` | 手动添加账号 |
+| `codex-relay list` | 查看账号、健康状态和占用状态 |
+| `codex-relay health` | 查看冷却和已退役账号记录 |
+| `codex-relay test [name]` | 对一个或全部账号做轻量预检 |
+| `codex-relay use <name>` | 设置默认优先账号 |
+| `codex-relay remove <name>` | 删除账号 |
+| `codex-relay --account <name> "任务"` | 本次运行指定账号 |
+| `codex-relay "任务"` | 启动官方 Codex，并启用自动切号和恢复 |
+| `codex-relay exec "任务"` | 透传官方 Codex 的非交互 `exec` 模式 |
+
+`codex-relay test` 只请求 `baseUrl + /models`。`OK` 表示轻量预检通过，`UNKNOWN` 表示中转站不支持这个接口或暂时无法用它判断，`FAILED` 表示明确的连接、鉴权或额度失败。真实切号不依赖 `/models`，只根据实际 Codex 对话输出判断。
+
+## 本地文件
+
+号池状态保存在 `~/.codex-relay/`：
+
+- `accounts.json`：账号池
+- `state.json`：默认账号、最近成功账号和多终端租约
+- `health.json`：冷却、失败原因和退役记录
+- `store.lock`：本机并发写入锁
+
+Codex 配置复用官方 Codex Home。默认路径是 `~/.codex/`，如果当前环境设置了 `CODEX_HOME`，则沿用 `CODEX_HOME` 指向的目录。
+
+每次启动或恢复 Codex 前，工具会写入当前号池账号：
+
+- `auth.json` 里的 `OPENAI_API_KEY`
+- `config.toml` 中当前 `model_provider` 对应 `[model_providers.<provider>]` 的 `base_url`
+
+账号切换时，CLI 窗口会显示当前账号、脱敏 key、base URL 和模型，例如：
+
+```text
+[codex-relay] using relay-a (key sk-...abcd, baseUrl https://relay.example.com/v1).
 ```
 
-`codex-relay test` 只是轻量预检：`OK` 表示 `/models` 预检通过，`UNKNOWN` 表示中转站不支持这个接口或暂时无法用它判断，不代表不能正常对话，`FAILED` 才是明确不可连、鉴权失败或额度失败。
-
-本机数据保存在 `~/.codex-relay/`。工具不会修改 `~/.codex/config.toml`，也不会改官方 Codex 的登录文件。
+如果本机存在多个 Codex CLI 版本，默认会使用 `PATH` 中的 `codex`。需要固定某个 Codex 可执行文件时，设置 `CODEX_RELAY_CODEX_PATH`。
 
 ## 多项目同时使用
 
-多个项目、多个终端同时运行 `codex-relay` 时，共用同一个 `~/.codex-relay/` 号池。工具会自动协调，不需要你手动分配 key：
+多个项目、多个终端同时运行 `codex-relay` 时，共用同一个 `~/.codex-relay/` 号池。工具会用 `store.lock` 和 `state.json` 里的短时租约协调账号分配：
 
-- `accounts.json`、`state.json`、`health.json` 的读写会经过本地 `store.lock`，避免多个终端同时写坏配置或互相覆盖状态。
-- 每个正在运行的终端会在 `state.json` 里登记一个短时租约。新终端启动时会优先选择没有被其他终端使用的账号。
-- `codex-relay list` 会在正在占用的账号后显示 `in-use`。
-- 如果号池账号数量不够，所有可用账号都已经被占用，才会共享同一个账号，并在 CLI 里提示这个账号正在被其他终端使用。
-- 每个运行实例都会使用自己独立的 relay-owned `CODEX_HOME` 会话目录，避免不同项目或不同终端之间的 `resume --last` 串会话。
-- 终端正常退出会释放租约；异常退出时租约会自动过期，不会长期占住账号。
-- 如果你想让某个项目使用独立号池，可以给该终端设置 `CODEX_RELAY_HOME` 指到另一个目录。
+- 新终端优先选择没有被其他终端占用的账号
+- `codex-relay list` 会在占用中的账号后显示 `in-use`
+- 账号数量不足时才会共享同一个账号，并在 CLI 窗口提示
+- 终端正常退出会释放租约；异常退出时租约会自动过期
+- 需要隔离号池时，为该终端设置 `CODEX_RELAY_HOME`
+
+所有运行实例默认复用同一个 Codex Home，因此官方 Codex 的登录状态、配置和会话历史保持一致。
 
 ## 自动切号
 
-每次启动 Codex 时，工具会给官方 `codex` 子进程注入当前账号的 `OPENAI_API_KEY`，并传入对应的 `openai_base_url`。如果输出里出现余额不足、额度耗尽、401/402、限流或中转站暂不可用等信号，会自动换下一个可用账号。
+运行过程中，`codex-relay` 透传官方 Codex 输出，同时识别余额不足、额度耗尽、401/402/403、限流、上游异常和中转站不可用等信号。高置信失败会立即切号，中等置信失败会等 Codex 异常退出后切号。
 
-交互式模式会用 PTY 承载官方 Codex TUI，并自动处理 raw mode、窗口尺寸变化和退出后的终端恢复。缺少 PTY 时，工具不会用普通 stdin/stdout 管道硬跑交互界面，因为那种方式容易出现输入无响应、界面错乱。
+失败账号会进入 `health.json` 冷却期，冷却中的账号会被跳过。后续真实对话成功一次，账号会恢复为可用；连续 10 天没有恢复的账号会从 `accounts.json` 移除，并保留在 `health.json` 的 `retired` 记录里。
 
-能识别到 Codex 会话 id 时，会用 `codex resume <session-id> Continue` 恢复；识别不到时会退回 `codex resume --last Continue`。
-
-真实切号不依赖 `/models`。工具只根据 Codex 实际对话输出判断 key 是否失败：鉴权失败、额度耗尽、限流、上游异常会写入 `~/.codex-relay/health.json`，冷却中的 key 会被跳过。key 后续真实对话成功一次就自动恢复为可用；如果连续 10 天没有恢复，会自动从号池移除，并保留在 `health.json` 的 retired 记录里。用 `codex-relay health` 可以查看当前状态。
+能识别 Codex 会话 id 时，恢复命令使用 `codex resume <session-id> Continue`；识别不到时使用 `codex resume --last Continue`。
 
 ## 开发
 
@@ -103,4 +131,5 @@ pnpm install
 pnpm lint
 pnpm test
 pnpm build
+pnpm pack --dry-run
 ```

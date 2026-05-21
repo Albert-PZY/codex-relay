@@ -37,6 +37,8 @@ status: active
 
 ## Release PR Checks
 
+- Release Please uses a temporary branch named like `release-please--branches--main--components--codex-relay-cli` for the release PR.
+- That branch belongs to the automation flow and can be deleted after the release PR is merged or closed.
 - Release Please PRs created by GitHub Actions may not automatically trigger PR checks.
 - If a release PR has no checks, push an empty commit to that release branch:
 

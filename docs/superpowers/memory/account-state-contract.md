@@ -7,8 +7,10 @@ tags:
   - state
 owned_paths:
   - src/core/accounts.ts
+  - src/core/health.ts
   - src/core/state.ts
   - src/core/rotator.ts
+  - src/core/store-lock.ts
 status: active
 ---
 
@@ -30,7 +32,10 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 - Import files use a top-level JSON array; each item contains `baseUrl`, `apiKey`, optional `name`, and optional `model`.
 - `state.json` contains `version`, `currentIndex`, optional `lastSuccessfulAccount`, `leases`, and `updatedAt`.
 - `leases` records active local runner sessions with `ownerId`, `accountName`, `pid`, optional `cwd`, `startedAt`, `updatedAt`, and `expiresAt`.
-- Runtime Codex homes are isolated per runner instance under `codex-home/runs/<ownerId>` so fallback resume state cannot cross active terminals.
+- `health.json` contains `version`, `accounts`, `retired`, and `updatedAt`.
+- Active health records contain `status`, `consecutiveFailures`, optional `baseUrl`, `reason`, failure timestamps, success timestamp, and `cooldownUntil`.
+- Retired health records contain `name`, optional `baseUrl`, `reason`, `firstFailedAt`, `lastFailedAt`, and `removedAt`.
+- Managed runs reuse the configured Codex home so official Codex auth, config, and session history remain available.
 
 ## Invariants
 
@@ -39,7 +44,9 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 - Shared store writes are serialized through `store.lock`, then written atomically through a temporary file plus rename.
 - Concurrent runner sessions should prefer unleased accounts. Sharing an account is a fallback only when all available accounts are already leased.
 - Leases are short-lived and expire automatically if a terminal exits unexpectedly.
-- A runner must keep the same isolated Codex home for all retry and rotation attempts inside that run.
+- A runner must update the configured Codex home before every attempt so `auth.json` and provider `base_url` match the selected account.
+- A cooldown account becomes selectable again after `cooldownUntil`.
+- An account that remains in cooldown continuously for 10 days is removed from `accounts.json` and recorded under `health.json.retired`.
 - `data.txt`, `data.json`, `切号工具.md`, and local runtime data are ignored by git.
 
 ## Schema Policy
