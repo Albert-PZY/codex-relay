@@ -30,7 +30,7 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 - Import files use a top-level JSON array; each item contains `baseUrl`, `apiKey`, optional `name`, and optional `model`.
 - `state.json` contains `version`, `currentIndex`, optional `lastSuccessfulAccount`, `leases`, and `updatedAt`.
 - `leases` records active local runner sessions with `ownerId`, `accountName`, `pid`, optional `cwd`, `startedAt`, `updatedAt`, and `expiresAt`.
-- Runtime Codex homes are isolated per runner instance under `codex-home/runs/<ownerId>` so fallback resume state cannot cross active terminals.
+- Managed runs reuse the configured Codex home so official Codex auth, config, and session history remain available.
 
 ## Invariants
 
@@ -39,7 +39,7 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 - Shared store writes are serialized through `store.lock`, then written atomically through a temporary file plus rename.
 - Concurrent runner sessions should prefer unleased accounts. Sharing an account is a fallback only when all available accounts are already leased.
 - Leases are short-lived and expire automatically if a terminal exits unexpectedly.
-- A runner must keep the same isolated Codex home for all retry and rotation attempts inside that run.
+- A runner must update the configured Codex home before every attempt so `auth.json` and provider `base_url` match the selected account.
 - `data.txt`, `data.json`, `切号工具.md`, and local runtime data are ignored by git.
 
 ## Schema Policy

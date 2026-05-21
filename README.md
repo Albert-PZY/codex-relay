@@ -72,7 +72,7 @@ codex-relay "你的任务"
 
 `codex-relay test` 只是轻量预检：`OK` 表示 `/models` 预检通过，`UNKNOWN` 表示中转站不支持这个接口或暂时无法用它判断，不代表不能正常对话，`FAILED` 才是明确不可连、鉴权失败或额度失败。
 
-本机数据保存在 `~/.codex-relay/`。工具不会修改 `~/.codex/config.toml`，也不会改官方 Codex 的登录文件。
+本机号池和健康状态保存在 `~/.codex-relay/`。运行 Codex 时会复用官方 Codex 的 `~/.codex/`，并按当前号池账号更新 `auth.json` 里的 `OPENAI_API_KEY` 和 `config.toml` 里当前模型 provider 的 `base_url`。
 
 ## 多项目同时使用
 
@@ -82,13 +82,13 @@ codex-relay "你的任务"
 - 每个正在运行的终端会在 `state.json` 里登记一个短时租约。新终端启动时会优先选择没有被其他终端使用的账号。
 - `codex-relay list` 会在正在占用的账号后显示 `in-use`。
 - 如果号池账号数量不够，所有可用账号都已经被占用，才会共享同一个账号，并在 CLI 里提示这个账号正在被其他终端使用。
-- 每个运行实例都会使用自己独立的 relay-owned `CODEX_HOME` 会话目录，避免不同项目或不同终端之间的 `resume --last` 串会话。
+- 所有运行实例复用官方 Codex 的 `~/.codex/` 配置和历史。账号分配仍由 `~/.codex-relay/state.json` 的租约协调。
 - 终端正常退出会释放租约；异常退出时租约会自动过期，不会长期占住账号。
 - 如果你想让某个项目使用独立号池，可以给该终端设置 `CODEX_RELAY_HOME` 指到另一个目录。
 
 ## 自动切号
 
-每次启动 Codex 时，工具会给官方 `codex` 子进程注入当前账号的 `OPENAI_API_KEY`，并传入对应的 `openai_base_url`。如果输出里出现余额不足、额度耗尽、401/402、限流或中转站暂不可用等信号，会自动换下一个可用账号。
+每次启动 Codex 前，工具会把当前账号写入官方 Codex 配置：`auth.json.OPENAI_API_KEY` 和当前模型 provider 的 `base_url`。如果输出里出现余额不足、额度耗尽、401/402、限流或中转站暂不可用等信号，会自动换下一个可用账号并重新写入配置。
 
 交互式模式会用 PTY 承载官方 Codex TUI，并自动处理 raw mode、窗口尺寸变化和退出后的终端恢复。缺少 PTY 时，工具不会用普通 stdin/stdout 管道硬跑交互界面，因为那种方式容易出现输入无响应、界面错乱。
 

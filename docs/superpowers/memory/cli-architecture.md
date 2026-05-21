@@ -29,12 +29,12 @@ status: active
 - `setup` defaults to `data.json`; `import`, `setup`, and first-run auto-import only accept a top-level JSON array of flat account objects.
 - Import-style flows use one idempotent merge path that skips duplicate account names and duplicate relay credentials.
 - Before a managed run, `src/cli.ts` auto-imports `data.json` only when the account store is empty.
-- `src/core/runner.ts` injects `OPENAI_API_KEY` and passes `-c openai_base_url="..."` per Codex child process.
+- `src/core/runner.ts` injects `OPENAI_API_KEY` and updates Codex `auth.json` plus active provider `base_url` before each child process.
 - `list` shows active account leases as `in-use` so concurrent terminal allocation is visible.
 
 ## Invariants
 
-- Do not modify the user's `~/.codex` configuration or auth files.
+- Reuse the configured Codex home and keep only account-pool state under `~/.codex-relay`.
 - Keep account secrets outside the repository and under the user's home data directory.
 - Serialize shared account, health, and lease store updates through the local store lock.
 - Prefer unleased accounts for concurrent terminals and share only when the pool is tight.

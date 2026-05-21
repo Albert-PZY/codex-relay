@@ -9,7 +9,7 @@ Build a lightweight Node.js CLI that manages multiple relay API keys/base URLs f
 
 ## Architecture
 
-The package exposes a global `codex-relay` binary. Management commands read and write `~/.codex-relay/accounts.json` and `~/.codex-relay/state.json`. Managed Codex runs launch the official `codex` executable as a child process, override `OPENAI_API_KEY`, and pass `-c openai_base_url="<baseUrl>"` so the user's `~/.codex` directory remains untouched.
+The package exposes a global `codex-relay` binary. Management commands read and write `~/.codex-relay/accounts.json` and `~/.codex-relay/state.json`. Managed Codex runs launch the official `codex` executable as a child process, reuse the configured Codex home, and update `auth.json.OPENAI_API_KEY` plus the active model provider `base_url` before each attempt.
 
 The runner keeps output passthrough simple. It watches child output with a conservative detector. High-confidence quota or unusable-environment messages trigger immediate rotation. Medium-confidence messages rotate only when the child exits unsuccessfully. After rotation, the runner restarts Codex with `resume <session-id> Continue` when it can identify a session id, otherwise it falls back to `resume --last Continue` only when explicit session discovery is unavailable.
 

@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { spawn as spawnChild } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { loadAccountsFile, saveAccountsFile } from './accounts.js';
@@ -19,6 +19,7 @@ import {
 } from './state.js';
 import { buildRotationOrder, getAccountByName, getAccountIndex, isAccountAvailable } from './rotator.js';
 import { withStoreLock } from './store-lock.js';
+import { readJsonFile, writeJsonAtomic, writeTextAtomic } from '../utils/atomic.js';
 import { resolveDataPaths, type DataPaths } from '../utils/paths.js';
 import { restoreTerminal } from '../utils/terminal.js';
 import type { AccountLease, AccountsFile, HealthFailureReason, HealthFile, RelayAccount, RunnerOptions, SpawnResult, StateFile } from '../types.js';
@@ -216,7 +217,7 @@ export function buildCodexArgs(
   codexArgs: string[],
   resume?: { sessionId?: string; prompt: string }
 ): string[] {
-  const args = ['-c', `openai_base_url="${account.baseUrl}"`];
+  const args: string[] = [];
   if (account.model) {
     args.push('-m', account.model);
   }
@@ -298,7 +299,7 @@ export async function runManagedCodex(
   const leaseHeartbeatMs = dependencies.leaseHeartbeatMs ?? ACCOUNT_LEASE_HEARTBEAT_MS;
   const healthPath = resolveHealthPath(paths);
   const ownerId = createLeaseOwnerId();
-  const codexHome = resolveRunCodexHome(resolveCodexHomePath(paths), ownerId);
+  const codexHome = resolveCodexHomePath(paths);
   await mkdir(codexHome, { recursive: true });
   let sessionId: string | undefined;
   let hasInterruptedSession = false;
@@ -338,6 +339,9 @@ export async function runManagedCodex(
         attemptArgs.resume = sessionId ? { sessionId, prompt: 'Continue' } : { prompt: 'Continue' };
       }
 
+      await withStoreLock(paths, async () => {
+        await prepareCodexHomeForAccount(codexHome, account);
+      });
       output(formatAccountNotice(account, attemptArgs.resume !== undefined));
       const result = await runAttempt(attemptArgs);
 
@@ -386,10 +390,6 @@ function resolveHealthPath(paths: Pick<DataPaths, 'accounts' | 'state'> & Partia
 
 function resolveCodexHomePath(paths: Pick<DataPaths, 'state'> & Partial<Pick<DataPaths, 'codexHome'>>): string {
   return paths.codexHome ?? join(dirname(paths.state), 'codex-home');
-}
-
-function resolveRunCodexHome(codexHomeRoot: string, ownerId: string): string {
-  return join(codexHomeRoot, 'runs', ownerId.replace(/[^a-zA-Z0-9._-]/g, '-'));
 }
 
 interface ReservedAccount {
@@ -504,6 +504,81 @@ async function recordSuccessfulAttempt(
     });
     await recordAccountSuccess(healthPath, accountName, successAt);
   });
+}
+
+async function prepareCodexHomeForAccount(codexHome: string, account: RelayAccount): Promise<void> {
+  await mkdir(codexHome, { recursive: true });
+  await writeCodexAuth(join(codexHome, 'auth.json'), account.apiKey);
+  await writeCodexConfig(join(codexHome, 'config.toml'), account.baseUrl);
+}
+
+async function writeCodexAuth(filePath: string, apiKey: string): Promise<void> {
+  let auth: Record<string, unknown> = {};
+  try {
+    auth = await readJsonFile<Record<string, unknown>>(filePath);
+  } catch (error) {
+    if (!isMissingFile(error) && !(error instanceof SyntaxError)) {
+      throw error;
+    }
+  }
+  await writeJsonAtomic(filePath, {
+    ...auth,
+    OPENAI_API_KEY: apiKey
+  });
+}
+
+async function writeCodexConfig(filePath: string, baseUrl: string): Promise<void> {
+  let config = '';
+  try {
+    config = await readFile(filePath, 'utf8');
+  } catch (error) {
+    if (!isMissingFile(error)) {
+      throw error;
+    }
+  }
+
+  const provider = findTomlStringValue(config, 'model_provider') ?? 'openai';
+  const nextConfig = setProviderBaseUrl(config, provider, baseUrl);
+  await writeTextAtomic(filePath, nextConfig);
+}
+
+function setProviderBaseUrl(config: string, provider: string, baseUrl: string): string {
+  const normalizedConfig = config.length > 0 ? config.replace(/\r\n/g, '\n') : defaultCodexConfig(provider);
+  const escapedProvider = escapeRegExp(provider);
+  const sectionPattern = new RegExp(`(^\\[model_providers\\.${escapedProvider}\\]\\n)([\\s\\S]*?)(?=^\\[|\\s*$)`, 'm');
+  const match = sectionPattern.exec(normalizedConfig);
+  if (!match) {
+    const separator = normalizedConfig.endsWith('\n') ? '\n' : '\n\n';
+    return `${normalizedConfig}${separator}[model_providers.${provider}]\nbase_url = ${tomlString(baseUrl)}\n`;
+  }
+
+  const header = match[1]!;
+  const body = match[2]!;
+  const updatedBody = /^base_url\s*=.*$/m.test(body)
+    ? body.replace(/^base_url\s*=.*$/m, `base_url = ${tomlString(baseUrl)}`)
+    : `base_url = ${tomlString(baseUrl)}\n${body}`;
+  return `${normalizedConfig.slice(0, match.index)}${header}${updatedBody}${normalizedConfig.slice(match.index + match[0].length)}`;
+}
+
+function defaultCodexConfig(provider: string): string {
+  return `model_provider = ${tomlString(provider)}\n`;
+}
+
+function findTomlStringValue(config: string, key: string): string | undefined {
+  const pattern = new RegExp(`^${escapeRegExp(key)}\\s*=\\s*"([^"]*)"`, 'm');
+  return pattern.exec(config)?.[1];
+}
+
+function tomlString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isMissingFile(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
 
 async function releaseAccountLease(paths: RunnerDataPaths, ownerId: string): Promise<void> {

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addAccount } from '../src/core/accounts.js';
@@ -35,24 +35,22 @@ describe('runner', () => {
     addedAt: '2026-05-18T00:00:00.000Z'
   };
 
-  it('builds codex env with relay-owned CODEX_HOME when provided', () => {
+  it('builds codex env with the configured CODEX_HOME when provided', () => {
     const env = buildCodexEnv(account, { CODEX_HOME: '/keep', FOO: 'bar' });
 
     expect(env.OPENAI_API_KEY).toBe('sk-a');
     expect(env.CODEX_HOME).toBe('/keep');
     expect(env.FOO).toBe('bar');
 
-    const isolatedEnv = buildCodexEnv(account, { CODEX_HOME: '/user-codex' }, '/relay-codex');
-    expect(isolatedEnv.OPENAI_API_KEY).toBe('sk-a');
-    expect(isolatedEnv.CODEX_HOME).toBe('/relay-codex');
+    const configuredEnv = buildCodexEnv(account, { CODEX_HOME: '/user-codex' }, '/relay-codex');
+    expect(configuredEnv.OPENAI_API_KEY).toBe('sk-a');
+    expect(configuredEnv.CODEX_HOME).toBe('/relay-codex');
   });
 
-  it('builds codex args with base url config and model', () => {
+  it('builds codex args with model and no base url override', () => {
     const args = buildCodexArgs(account, ['hello']);
 
     expect(args).toEqual([
-      '-c',
-      'openai_base_url="https://relay.example.com/v1"',
       '-m',
       'gpt-5.1-codex',
       'hello',
@@ -64,8 +62,6 @@ describe('runner', () => {
     const args = buildCodexArgs(account, ['exec', 'hello']);
 
     expect(args).toEqual([
-      '-c',
-      'openai_base_url="https://relay.example.com/v1"',
       '-m',
       'gpt-5.1-codex',
       'exec',
@@ -80,8 +76,6 @@ describe('runner', () => {
     });
 
     expect(args).toEqual([
-      '-c',
-      'openai_base_url="https://relay.example.com/v1"',
       '-m',
       'gpt-5.1-codex',
       'resume',
@@ -110,8 +104,6 @@ describe('runner', () => {
     });
 
     expect(args).toEqual([
-      '-c',
-      'openai_base_url="https://relay.example.com/v1"',
       '-m',
       'gpt-5.1-codex',
       'exec',
@@ -507,7 +499,7 @@ describe('runner', () => {
     const result = await runManagedCodex(
       { codexArgs: ['do task'], accountName: 'relay-a' },
       {
-        paths: { accounts: accountsPath, state: statePath, health: healthPath, codexHome: join(tmpDir, 'isolated-codex') },
+        paths: { accounts: accountsPath, state: statePath, health: healthPath, codexHome: join(tmpDir, 'configured-codex') },
         adapter,
         env: { CODEX_HOME: '/user-codex' },
         output: (chunk) => output.push(chunk)
@@ -519,16 +511,17 @@ describe('runner', () => {
     expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
     expect(adapter.spawns[1]?.env.OPENAI_API_KEY).toBe('sk-b');
     const codexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
-    expect(codexHome).not.toBe(join(tmpDir, 'isolated-codex'));
-    expect(codexHome.startsWith(join(tmpDir, 'isolated-codex', 'runs'))).toBe(true);
+    expect(codexHome).toBe(join(tmpDir, 'configured-codex'));
     expect(adapter.spawns[1]?.env.CODEX_HOME).toBe(codexHome);
     expect(adapter.spawns[1]?.args).toContain('resume');
     expect(adapter.spawns[1]?.args).toContain('--last');
+    await expect(readFile(join(codexHome, 'auth.json'), 'utf8')).resolves.toContain('"OPENAI_API_KEY": "sk-b"');
+    await expect(readFile(join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('base_url = "https://b.example.com/v1"');
     expect(output.join('')).toContain('[codex-relay] relay-a failed (quota); switching to relay-b');
     expect(output.join('')).toContain('[codex-relay] resuming with relay-b');
   });
 
-  it('creates the relay-owned codex home before launching codex', async () => {
+  it('creates and updates the configured codex home before launching codex', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -549,8 +542,9 @@ describe('runner', () => {
 
     const runCodexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
     expect((await stat(runCodexHome)).isDirectory()).toBe(true);
-    expect(runCodexHome).not.toBe(codexHome);
-    expect(runCodexHome.startsWith(join(codexHome, 'runs'))).toBe(true);
+    expect(runCodexHome).toBe(codexHome);
+    await expect(readFile(join(codexHome, 'auth.json'), 'utf8')).resolves.toContain('"OPENAI_API_KEY": "sk-a"');
+    await expect(readFile(join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('base_url = "https://a.example.com/v1"');
   });
 
   it('keeps non-interactive exec mode when resuming after rotation', async () => {
@@ -581,8 +575,6 @@ describe('runner', () => {
     );
 
     expect(adapter.spawns[1]?.args).toEqual([
-      '-c',
-      'openai_base_url="https://b.example.com/v1"',
       'exec',
       'resume',
       sessionId,
@@ -625,9 +617,8 @@ describe('runner', () => {
 
     expect(firstAdapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
     expect(secondAdapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-b');
-    expect(firstAdapter.spawns[0]?.env.CODEX_HOME).not.toBe(secondAdapter.spawns[0]?.env.CODEX_HOME);
-    expect(String(firstAdapter.spawns[0]?.env.CODEX_HOME)).toContain(join(tmpDir, 'codex-home', 'runs'));
-    expect(String(secondAdapter.spawns[0]?.env.CODEX_HOME)).toContain(join(tmpDir, 'codex-home', 'runs'));
+    expect(firstAdapter.spawns[0]?.env.CODEX_HOME).toBe(secondAdapter.spawns[0]?.env.CODEX_HOME);
+    expect(String(firstAdapter.spawns[0]?.env.CODEX_HOME)).toBe(join(tmpDir, 'codex-home'));
     expect(Object.values((await loadStateFile(statePath)).leases)).toHaveLength(1);
 
     firstHandle.exit();
@@ -791,9 +782,9 @@ describe('runner', () => {
       'sk-bad-2',
       'sk-good-3'
     ]);
-    expect(new Set(adapter.spawns.map((spawn) => spawn.args[1]))).toEqual(
-      new Set(['openai_base_url="https://same-relay.example.com/v1"'])
-    );
+    const codexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
+    await expect(readFile(join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('base_url = "https://same-relay.example.com/v1"');
+    await expect(readFile(join(codexHome, 'auth.json'), 'utf8')).resolves.toContain('"OPENAI_API_KEY": "sk-good-3"');
   });
 
   it('does not rotate on medium-confidence output when the process exits successfully', async () => {
