@@ -21,4 +21,6 @@
 | AC-009 | Git ignores local secrets and design-only local files. | Logic | `.gitignore` exists. | `data.txt`, `data.json`, and `切号工具.md` are ignored by git. |
 | AC-010 | GitHub Actions verify and publish the package through release automation. | Logic | Workflow files exist. | CI runs pnpm install, lint, test, build, and pack; Release Please creates release tags and publishes npm with provenance after a release PR is merged. |
 | AC-011 | README and contributing docs provide enough setup and commit guidance for new users. | Logic | Docs exist at repository root. | README documents install/config/run/import/security; CONTRIBUTING references Conventional Commits and functional commit grouping. |
-| AC-012 | The final project passes local verification. | API | Dependencies are installed. | `pnpm lint`, `pnpm test`, `pnpm build`, and `pnpm pack --dry-run` exit with code 0. |
+| AC-012 | Health state protects failed accounts without active probing cost. | Logic | Unit tests create cooldown and retired records. | Cooling accounts are skipped, successful accounts recover, and accounts that fail continuously for 10 days are retired. |
+| AC-013 | Help and version commands describe the wrapper CLI. | API | Unit tests invoke the public CLI. | `--help`, `--version`, and `version` report codex-relay behavior and version. |
+| AC-014 | The final project passes local verification. | API | Dependencies are installed. | `pnpm lint`, `pnpm test`, `pnpm build`, and `pnpm pack --dry-run` exit with code 0. |

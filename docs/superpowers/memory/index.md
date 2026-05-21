@@ -18,7 +18,10 @@ status: active
 - Account and state file contract: `docs/superpowers/memory/account-state-contract.md`
 - Release automation and npm publish runbook: `docs/superpowers/memory/release-automation-runbook.md`
 
-## Current Gaps
+## Runtime Anchors
 
-- Runtime behavior now exists and should be kept in sync with the implementation.
-- The remaining gap is codifying the `setup` shortcut and auto-import flow in a dedicated contract note if they change again.
+- Account-pool data lives under `~/.codex-relay` unless `CODEX_RELAY_HOME` is set.
+- Managed runs reuse the official Codex home: `CODEX_HOME` first, otherwise `~/.codex`.
+- JSON import accepts only a top-level array of flat account objects.
+- Rotation health, cooldown, leases, and 10-day retirement are persistent local state.
+- Release automation is driven by Conventional Commits and Release Please.

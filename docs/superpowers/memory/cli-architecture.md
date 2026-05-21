@@ -26,15 +26,19 @@ status: active
 
 - `src/index.ts` is the package binary entry point.
 - `src/cli.ts` registers account CRUD, import, setup, test, and managed Codex passthrough.
+- `--help`, `--version`, and the `version` command describe the wrapper itself, not the upstream Codex CLI.
 - `setup` defaults to `data.json`; `import`, `setup`, and first-run auto-import only accept a top-level JSON array of flat account objects.
 - Import-style flows use one idempotent merge path that skips duplicate account names and duplicate relay credentials.
 - Before a managed run, `src/cli.ts` auto-imports `data.json` only when the account store is empty.
 - `src/core/runner.ts` injects `OPENAI_API_KEY` and updates Codex `auth.json` plus active provider `base_url` before each child process.
+- `src/core/runner.ts` resolves the Codex executable from `CODEX_RELAY_CODEX_PATH` first, then from `PATH`.
 - `list` shows active account leases as `in-use` so concurrent terminal allocation is visible.
+- `test` is a lightweight `/models` diagnostic; rotation decisions are based on actual Codex output.
 
 ## Invariants
 
-- Reuse the configured Codex home and keep only account-pool state under `~/.codex-relay`.
+- Reuse the configured Codex home. The default is `~/.codex`, and `CODEX_HOME` can point to another Codex home.
+- Keep only account-pool state under `~/.codex-relay`.
 - Keep account secrets outside the repository and under the user's home data directory.
 - Serialize shared account, health, and lease store updates through the local store lock.
 - Prefer unleased accounts for concurrent terminals and share only when the pool is tight.
@@ -44,9 +48,10 @@ status: active
 ## Extension Points
 
 - Additional relay-specific quota patterns.
-- Additional Codex provider config flags if the upstream CLI changes.
+- Additional Codex provider config fields if the upstream CLI changes.
 
 ## Common Pitfalls
 
 - PTY support can fail on some Windows machines if native dependencies are unavailable; runtime falls back to a normal child process.
 - Quota detection must be conservative to avoid interrupting valid conversations.
+- Relays that do not implement `/models` can still work for real conversations; `UNKNOWN` from `test` is not an unusable-account verdict.
