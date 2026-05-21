@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/Albert-PZY/codex-relay/compare/v0.6.2...v0.6.3) (2026-05-21)
+
+
+### Bug Fixes
+
+* add rotation log and preserve resume order ([d5b9e51](https://github.com/Albert-PZY/codex-relay/commit/d5b9e5113a57e38ecf5a6a0cfac6cdc4c4950978))
+
 ## [0.6.2](https://github.com/Albert-PZY/codex-relay/compare/v0.6.1...v0.6.2) (2026-05-21)
 
 
