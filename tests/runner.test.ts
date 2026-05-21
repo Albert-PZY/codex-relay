@@ -21,6 +21,7 @@ const tmpDir = fileURLToPath(new URL('./tmp-runner/', import.meta.url));
 const accountsPath = join(tmpDir, 'accounts.json');
 const statePath = join(tmpDir, 'state.json');
 const healthPath = join(tmpDir, 'health.json');
+const rotationLogPath = join(tmpDir, 'rotation.log');
 
 afterEach(async () => {
   await rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
@@ -78,8 +79,8 @@ describe('runner', () => {
     expect(args).toEqual([
       '-m',
       'gpt-5.1-codex',
-      'resume',
       '--no-alt-screen',
+      'resume',
       '123e4567-e89b-12d3-a456-426614174000',
       'Continue'
     ]);
@@ -521,6 +522,39 @@ describe('runner', () => {
     expect(output.join('')).toContain('[codex-relay] resuming with relay-b');
   });
 
+  it('writes a concise rotation log when switching accounts', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const adapter = new FakeAdapter([
+      ['HTTP 401 invalid api key\n'],
+      ['continued\n']
+    ]);
+
+    await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, rotationLog: rotationLogPath },
+        adapter,
+        output: () => undefined,
+        now: () => new Date('2026-05-21T00:00:00.000Z')
+      }
+    );
+
+    const log = await readFile(rotationLogPath, 'utf8');
+    expect(log).toContain('relay-a -> relay-b');
+    expect(log).toContain('reason=auth');
+    expect(log).toContain('resume=last');
+  });
+
   it('creates and updates the configured codex home before launching codex', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
@@ -915,6 +949,51 @@ describe('runner', () => {
 
     expect(result.usedAccount).toBe('relay-b');
     expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-b');
+  });
+
+  it('skips cooling accounts when rotating after a failed attempt', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-c',
+      apiKey: 'sk-c',
+      baseUrl: 'https://c.example.com/v1'
+    });
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-b',
+      baseUrl: 'https://b.example.com/v1',
+      reason: 'auth',
+      now: new Date('2026-05-19T00:00:00.000Z')
+    });
+
+    const adapter = new FakeAdapter([
+      ['HTTP 401 invalid api key\n'],
+      ['continued\n']
+    ]);
+
+    const result = await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, health: healthPath, rotationLog: rotationLogPath },
+        adapter,
+        output: () => undefined,
+        now: () => new Date('2026-05-19T00:01:00.000Z')
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-c');
+    expect(adapter.spawns.map((spawn) => spawn.env.OPENAI_API_KEY)).toEqual(['sk-a', 'sk-c']);
+    const log = await readFile(rotationLogPath, 'utf8');
+    expect(log).toContain('relay-a -> relay-c');
+    expect(log).not.toContain('relay-a -> relay-b');
   });
 
   it('marks a successful account as active in health state', async () => {

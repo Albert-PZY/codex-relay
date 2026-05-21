@@ -87,6 +87,7 @@ codex-relay "帮我完成当前项目"
 - `accounts.json`：账号池
 - `state.json`：默认账号、最近成功账号和多终端租约
 - `health.json`：冷却、失败原因和退役记录
+- `rotation.log`：最近 7 天的切号记录
 - `store.lock`：本机并发写入锁
 
 Codex 配置复用官方 Codex Home。默认路径是 `~/.codex/`，如果当前环境设置了 `CODEX_HOME`，则沿用 `CODEX_HOME` 指向的目录。
