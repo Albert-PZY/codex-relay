@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/Albert-PZY/codex-relay/compare/v0.6.1...v0.6.2) (2026-05-21)
+
+
+### Bug Fixes
+
+* reuse codex home for relay runs ([aca8c83](https://github.com/Albert-PZY/codex-relay/commit/aca8c83fed18280ee1ca42377fb09ee5558954a2))
+
 ## [0.6.1](https://github.com/Albert-PZY/codex-relay/compare/v0.6.0...v0.6.1) (2026-05-20)
 
 
