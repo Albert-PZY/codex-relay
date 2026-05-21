@@ -36,6 +36,7 @@ src/
     accounts.ts       # 账号池读取、导入、去重、保存
     detector.ts       # Codex 输出中的额度和异常信号识别
     health.ts         # 冷却、成功恢复、10 天退役
+    rotation-log.ts   # 最近 7 天切号记录
     rotator.ts        # 账号选择和可用性判断
     runner.ts         # Codex 子进程、配置注入、切号和恢复
     state.ts          # 默认账号、最近成功账号、多终端租约
@@ -64,6 +65,7 @@ flowchart LR
   Accounts --> AccountsFile[(~/.codex-relay/accounts.json)]
   State --> StateFile[(~/.codex-relay/state.json)]
   Health --> HealthFile[(~/.codex-relay/health.json)]
+  Runner --> RotationLog[(~/.codex-relay/rotation.log)]
 ```
 
 ## 执行流程
@@ -84,6 +86,7 @@ sequenceDiagram
   Codex-->>CLI: 输出内容或错误信号
   CLI->>Pool: 成功则记录账号可用
   CLI->>Pool: 失败则记录冷却状态
+  CLI->>Pool: 写入切号日志
   CLI->>Home: 写入下一个账号
   CLI->>Codex: resume Continue
 ```
@@ -95,6 +98,7 @@ sequenceDiagram
 - `accounts.json`：`version`、`preferred`、`customQuotaPatterns`、`accounts`
 - `state.json`：`currentIndex`、`lastSuccessfulAccount`、`leases`、`updatedAt`
 - `health.json`：`accounts`、`retired`、`updatedAt`
+- `rotation.log`：最近 7 天切号记录，每行包含时间、来源账号、目标账号、失败原因和恢复方式
 - `store.lock`：本机多终端共享写入锁
 
 官方 Codex Home 默认是 `~/.codex/`，如果设置了 `CODEX_HOME`，则沿用该路径。`codex-relay` 只写入当前账号必需的两项：

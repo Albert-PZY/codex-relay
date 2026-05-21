@@ -18,6 +18,7 @@ import {
   saveStateFile
 } from './state.js';
 import { buildRotationOrder, getAccountByName, getAccountIndex, isAccountAvailable } from './rotator.js';
+import { appendRotationLog } from './rotation-log.js';
 import { withStoreLock } from './store-lock.js';
 import { readJsonFile, writeJsonAtomic, writeTextAtomic } from '../utils/atomic.js';
 import { resolveDataPaths, type DataPaths } from '../utils/paths.js';
@@ -61,7 +62,7 @@ export interface RunnerDependencies {
   leaseHeartbeatMs?: number;
 }
 
-type RunnerDataPaths = Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health' | 'codexHome' | 'lock'>>;
+type RunnerDataPaths = Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health' | 'codexHome' | 'lock' | 'rotationLog'>>;
 
 interface RunAttemptResult {
   exitCode: number | null;
@@ -226,10 +227,10 @@ export function buildCodexArgs(
     if (execMode) {
       args.push('exec');
     }
-    args.push('resume');
     if (!execMode) {
       args.push('--no-alt-screen');
     }
+    args.push('resume');
     if (resume.sessionId) {
       args.push(resume.sessionId);
     } else {
@@ -298,6 +299,7 @@ export async function runManagedCodex(
   const now = dependencies.now ?? (() => new Date());
   const leaseHeartbeatMs = dependencies.leaseHeartbeatMs ?? ACCOUNT_LEASE_HEARTBEAT_MS;
   const healthPath = resolveHealthPath(paths);
+  const rotationLogPath = resolveRotationLogPath(paths);
   const ownerId = createLeaseOwnerId();
   const codexHome = resolveCodexHomePath(paths);
   await mkdir(codexHome, { recursive: true });
@@ -365,6 +367,7 @@ export async function runManagedCodex(
       reserved = await recordFailedAttemptAndReserveNext({
         paths,
         healthPath,
+        rotationLogPath,
         ownerId,
         failedAccount: account,
         attempted,
@@ -392,6 +395,10 @@ function resolveCodexHomePath(paths: Pick<DataPaths, 'state'> & Partial<Pick<Dat
   return paths.codexHome ?? join(dirname(paths.state), 'codex-home');
 }
 
+function resolveRotationLogPath(paths: Pick<DataPaths, 'state'> & Partial<Pick<DataPaths, 'rotationLog'>>): string {
+  return paths.rotationLog ?? join(dirname(paths.state), 'rotation.log');
+}
+
 interface ReservedAccount {
   account: RelayAccount;
   accountsFile: AccountsFile;
@@ -411,6 +418,7 @@ interface ReserveNextInput {
 interface FailureReserveInput extends ReserveNextInput {
   failedAccount: RelayAccount;
   result: RunAttemptResult;
+  rotationLogPath: string;
 }
 
 async function reserveNextAccount(input: ReserveNextInput): Promise<ReservedAccount | undefined> {
@@ -482,7 +490,17 @@ async function recordFailedAttemptAndReserveNext(input: FailureReserveInput): Pr
       ...(input.result.retryAfterMs !== undefined ? { retryAfterMs: input.result.retryAfterMs } : {})
     });
 
-    return reserveNextAccountLocked(input);
+    const reserved = await reserveNextAccountLocked(input);
+    if (reserved) {
+      await appendRotationLog(input.rotationLogPath, {
+        at: failureAt,
+        from: input.failedAccount.name,
+        to: reserved.account.name,
+        reason: input.result.reason ?? 'unknown',
+        resumeMode: input.result.sessionId ? 'session' : 'last'
+      });
+    }
+    return reserved;
   });
 }
 

@@ -10,6 +10,7 @@ describe('path utilities', () => {
     expect(paths.accounts).toBe(join('C:/tmp/relay', 'accounts.json'));
     expect(paths.state).toBe(join('C:/tmp/relay', 'state.json'));
     expect(paths.health).toBe(join('C:/tmp/relay', 'health.json'));
+    expect(paths.rotationLog).toBe(join('C:/tmp/relay', 'rotation.log'));
     expect(paths.lock).toBe(join('C:/tmp/relay', 'store.lock'));
     expect(paths.codexHome).toBe(join('C:/Users/test', '.codex'));
   });
