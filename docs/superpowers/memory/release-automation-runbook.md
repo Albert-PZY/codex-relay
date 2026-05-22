@@ -48,6 +48,21 @@ git commit --allow-empty -m "chore: trigger release checks"
 git push origin <release-please-branch>
 ```
 
+## Protected Branch Merge
+
+- Do not stop the release flow just because `gh pr merge` reports a protected-branch merge error.
+- If the PR is mergeable and the required `CI` and `verify` checks have passed, use the repository-allowed admin merge path:
+
+```bash
+gh pr merge <pr-number> --admin --squash --delete-branch \
+  --subject "<conventional commit subject>" \
+  --body "<short merge body>"
+```
+
+- After merging a feature PR, watch the main-branch `Release Please` run.
+- If it opens a release PR without checks, trigger checks on the release branch with the empty-commit flow above.
+- Merge the release PR with the same admin merge path once checks pass.
+
 ## Verification Commands
 
 After a release, verify:
