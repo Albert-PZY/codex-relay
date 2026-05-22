@@ -16,14 +16,18 @@ const stateFileSchema = z.object({
   version: z.literal(1),
   currentIndex: z.number().int().min(0),
   lastSuccessfulAccount: z.string().trim().min(1).optional(),
-  leases: z.record(z.string(), accountLeaseSchema),
-  updatedAt: z.string().datetime()
+  leases: z.record(z.string(), z.unknown()),
+  updatedAt: z.string().optional()
 }).strict();
 
 export async function loadStateFile(filePath: string): Promise<StateFile> {
   try {
     const parsed = await readJsonFile<unknown>(filePath);
-    return validateStateFile(parsed);
+    const result = normalizeStateFile(parsed);
+    if (result.repaired) {
+      await writeJsonAtomic(filePath, result.file);
+    }
+    return result.file;
   } catch (error) {
     if (isMissingFile(error)) {
       return createDefaultState();
@@ -33,7 +37,7 @@ export async function loadStateFile(filePath: string): Promise<StateFile> {
 }
 
 export async function saveStateFile(filePath: string, state: StateFile): Promise<void> {
-  await writeJsonAtomic(filePath, validateStateFile({ ...state, updatedAt: state.updatedAt || new Date().toISOString() }));
+  await writeJsonAtomic(filePath, normalizeStateFile({ ...state, updatedAt: state.updatedAt || new Date().toISOString() }).file);
 }
 
 export function pruneExpiredLeases(state: StateFile, now: Date): StateFile {
@@ -59,23 +63,35 @@ export function createDefaultState(): StateFile {
   };
 }
 
-function validateStateFile(raw: unknown): StateFile {
+function normalizeStateFile(raw: unknown): { file: StateFile; repaired: boolean } {
   const result = stateFileSchema.safeParse(raw);
   if (!result.success) {
     throw new Error(`Invalid state file: ${result.error.issues.map((issue) => issue.message).join('; ')}`);
   }
+  let repaired = false;
+  const leases: Record<string, AccountLease> = {};
+  for (const [ownerId, rawLease] of Object.entries(result.data.leases)) {
+    const lease = accountLeaseSchema.safeParse(rawLease);
+    if (!lease.success) {
+      repaired = true;
+      continue;
+    }
+    leases[ownerId] = normalizeAccountLease(lease.data);
+  }
+  const updatedAt = normalizeIsoDate(result.data.updatedAt);
+  if (updatedAt !== result.data.updatedAt) {
+    repaired = true;
+  }
   const state: StateFile = {
     version: 1,
     currentIndex: result.data.currentIndex,
-    leases: Object.fromEntries(
-      Object.entries(result.data.leases).map(([ownerId, lease]) => [ownerId, normalizeAccountLease(lease)])
-    ),
-    updatedAt: result.data.updatedAt
+    leases,
+    updatedAt
   };
   if (result.data.lastSuccessfulAccount) {
     state.lastSuccessfulAccount = result.data.lastSuccessfulAccount;
   }
-  return state;
+  return { file: state, repaired };
 }
 
 type ParsedAccountLease = z.infer<typeof accountLeaseSchema>;
@@ -93,6 +109,12 @@ function normalizeAccountLease(lease: ParsedAccountLease): AccountLease {
     normalized.cwd = lease.cwd;
   }
   return normalized;
+}
+
+function normalizeIsoDate(value: unknown): string {
+  return typeof value === 'string' && z.string().datetime().safeParse(value).success
+    ? value
+    : new Date().toISOString();
 }
 
 function isMissingFile(error: unknown): boolean {

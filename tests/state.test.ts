@@ -60,20 +60,31 @@ describe('state store', () => {
     expect(saved.updatedAt).toMatch(/T/);
   });
 
-  it('rejects malformed state files', async () => {
+  it('repairs malformed stored lease entries and invalid timestamps', async () => {
     await mkdir(tmpDir, { recursive: true });
     await writeFile(
       statePath,
       JSON.stringify({
         version: 1,
-        currentIndex: -1,
-        leases: {},
+        currentIndex: 0,
+        leases: {
+          bad: {
+            accountName: 'relay-a',
+            ownerId: 'bad',
+            pid: 1,
+            startedAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+            expiresAt: ''
+          }
+        },
         updatedAt: 'not-a-date'
       }),
       'utf8'
     );
 
-    await expect(loadStateFile(statePath)).rejects.toThrow(/invalid state file/i);
+    const state = await loadStateFile(statePath);
+    expect(state.leases).toEqual({});
+    expect(state.updatedAt).toMatch(/T/);
   });
 
   it('rejects unknown state fields', async () => {

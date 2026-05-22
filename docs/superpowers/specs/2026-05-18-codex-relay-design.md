@@ -43,6 +43,8 @@ Account management commands validate duplicate names, valid URLs, and non-empty 
 
 The repository uses Node.js `>=22 <23`, TypeScript, ESM, pnpm, commander, zod, node-pty, and vitest. GitHub Actions run install, lint, test, build, and pack checks on pull requests and main. Releases use Release Please with Conventional Commits, npm provenance publishing, and moving tag sync for `vX` and `vX.Y`.
 
+If a PR is mergeable but branch protection blocks normal merge after required checks have passed, maintainers may use an admin merge or force-capable merge path that is allowed by the repository rules. The release flow must not stop at a protected-branch merge error: finish the merge, let Release Please create the version PR, trigger checks on the Release Please branch when needed, merge the version PR, then verify GitHub Release, tags, npm, and the local global install.
+
 ## Documentation
 
 `README.md` explains install, quick start, account import, managed run, rotation limits, and security notes. `CONTRIBUTING.md` defines Conventional Commits, branch discipline, pnpm-only workflow, and functional commit grouping. `.gitignore` excludes sensitive local files and generated build output.

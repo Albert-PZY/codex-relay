@@ -331,7 +331,7 @@ describe('account store', () => {
     await expect(importAccountsFromFile(importPath)).rejects.toThrow(/invalid import file/i);
   });
 
-  it('rejects duplicate names already stored in accounts json', async () => {
+  it('repairs duplicate stored accounts automatically', async () => {
     await mkdir(tmpDir, { recursive: true });
     await writeFile(
       accountsPath,
@@ -356,7 +356,9 @@ describe('account store', () => {
       'utf8'
     );
 
-    await expect(loadAccountsFile(accountsPath)).rejects.toThrow(/duplicate account/i);
+    const file = await loadAccountsFile(accountsPath);
+
+    expect(file.accounts.map((account) => account.name)).toEqual(['relay-a', 'relay-a-2']);
   });
 
   it('rejects malformed stored accounts json', async () => {
@@ -444,7 +446,7 @@ describe('account store', () => {
     expect(imported).toEqual([]);
   });
 
-  it('rejects stored files with an invalid preferred account', async () => {
+  it('repairs stored files with an invalid preferred account', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -452,12 +454,10 @@ describe('account store', () => {
     });
     const file = await loadAccountsFile(accountsPath);
 
-    await expect(
-      saveAccountsFile(accountsPath, {
-        ...file,
-        preferred: 'missing'
-      })
-    ).rejects.toThrow(/preferred account/i);
+    await saveAccountsFile(accountsPath, {
+      ...file,
+      preferred: 'missing'
+    });
 
     const saved = await loadAccountsFile(accountsPath);
     expect(saved.preferred).toBe('relay-a');
