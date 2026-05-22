@@ -35,7 +35,11 @@ export interface ImportedAccountInput {
 export async function loadAccountsFile(filePath: string): Promise<AccountsFile> {
   try {
     const parsed = await readJsonFile<unknown>(filePath);
-    return validateAccountsFile(parsed);
+    const result = normalizeAccountsFile(parsed);
+    if (result.repaired) {
+      await writeJsonAtomic(filePath, result.file);
+    }
+    return result.file;
   } catch (error) {
     if (isMissingFile(error)) {
       return createEmptyAccountsFile();
@@ -45,7 +49,7 @@ export async function loadAccountsFile(filePath: string): Promise<AccountsFile> 
 }
 
 export async function saveAccountsFile(filePath: string, data: AccountsFile): Promise<void> {
-  await writeJsonAtomic(filePath, validateAccountsFile(data));
+  await writeJsonAtomic(filePath, normalizeAccountsFile(data).file);
 }
 
 export async function listAccounts(filePath: string): Promise<RelayAccount[]> {
@@ -256,6 +260,16 @@ function generateAccountName(
   return candidate;
 }
 
+function generateUniqueStoredName(baseName: string, seenNames: Set<string>): string {
+  let suffix = 2;
+  let candidate = `${baseName}-${suffix}`;
+  while (seenNames.has(candidate)) {
+    suffix += 1;
+    candidate = `${baseName}-${suffix}`;
+  }
+  return candidate;
+}
+
 function inferName(baseUrl: string, index: number): string {
   try {
     const host = new URL(baseUrl).hostname.replace(/[^a-zA-Z0-9-]+/g, '-');
@@ -273,29 +287,45 @@ function validateAccount(raw: unknown): RelayAccount {
   return normalizeAccount(result.data);
 }
 
-function validateAccountsFile(raw: unknown): AccountsFile {
+function normalizeAccountsFile(raw: unknown): { file: AccountsFile; repaired: boolean } {
   const result = accountsFileSchema.safeParse(raw);
   if (!result.success) {
     throw new Error(`Invalid accounts file: ${formatZodIssues(result.error.issues)}`);
   }
+  let repaired = false;
   const normalizedAccounts = result.data.accounts.map(normalizeAccount);
   const names = new Set<string>();
-  for (const account of normalizedAccounts) {
-    if (names.has(account.name)) {
-      throw new Error(`Invalid accounts file: duplicate account "${account.name}".`);
+  const fingerprints = new Set<string>();
+  const accounts: RelayAccount[] = [];
+  for (let account of normalizedAccounts) {
+    const fingerprint = accountFingerprint(account);
+    if (fingerprints.has(fingerprint)) {
+      repaired = true;
+      continue;
     }
+    if (names.has(account.name)) {
+      account = {
+        ...account,
+        name: generateUniqueStoredName(account.name, names)
+      };
+      repaired = true;
+    }
+    fingerprints.add(fingerprint);
     names.add(account.name);
+    accounts.push(account);
+  }
+  let preferred = result.data.preferred;
+  if (preferred && !names.has(preferred)) {
+    preferred = accounts[0]?.name;
+    repaired = true;
   }
   const file: AccountsFile = {
     version: 1,
-    ...(result.data.preferred ? { preferred: result.data.preferred } : {}),
+    ...(preferred ? { preferred } : {}),
     customQuotaPatterns: result.data.customQuotaPatterns,
-    accounts: normalizedAccounts
+    accounts
   };
-  if (file.preferred && !names.has(file.preferred)) {
-    throw new Error(`Invalid accounts file: preferred account "${file.preferred}" does not exist.`);
-  }
-  return file;
+  return { file, repaired };
 }
 
 function createEmptyAccountsFile(): AccountsFile {

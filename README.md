@@ -123,6 +123,8 @@ Codex 配置复用官方 Codex Home。默认路径是 `~/.codex/`，如果当前
 
 失败账号会进入 `health.json` 冷却期，冷却中的账号会被跳过。后续真实对话成功一次，账号会恢复为可用；连续 10 天没有恢复的账号会从 `accounts.json` 移除，并保留在 `health.json` 的 `retired` 记录里。
 
+如果本机曾经写入过重复账号或坏掉的旧状态，`codex-relay` 会在下次读取时自动修复它们，不需要手工改 JSON。
+
 能识别 Codex 会话 id 时，恢复命令使用 `codex resume <session-id> Continue`；识别不到时使用 `codex resume --last Continue`。
 
 ## 开发
