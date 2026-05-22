@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/Albert-PZY/codex-relay/compare/v0.6.3...v0.6.4) (2026-05-22)
+
+
+### Bug Fixes
+
+* auto-repair duplicate local state files ([6328ecf](https://github.com/Albert-PZY/codex-relay/commit/6328ecf8bb56951bcd3a8baa2cb953e554d014e9))
+
 ## [0.6.3](https://github.com/Albert-PZY/codex-relay/compare/v0.6.2...v0.6.3) (2026-05-21)
 
 
