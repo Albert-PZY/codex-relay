@@ -303,9 +303,12 @@ export async function runManagedCodex(
   const rotationLogPath = resolveRotationLogPath(paths);
   const ownerId = createLeaseOwnerId();
   const codexHome = resolveCodexHomePath(paths);
+  const effectiveCwd = options.cwd ?? process.cwd();
   await mkdir(codexHome, { recursive: true });
-  let sessionId: string | undefined;
-  let hasInterruptedSession = false;
+  const pendingResume = await loadPendingResumeForCwd(paths, effectiveCwd, options.codexArgs);
+  let sessionId = pendingResume?.sessionId;
+  let hasInterruptedSession = pendingResume !== undefined;
+  const resumePrompt = pendingResume?.prompt ?? 'Continue';
   const attempted = new Set<string>();
   let reserved = await reserveNextAccount({
     paths,
@@ -313,7 +316,7 @@ export async function runManagedCodex(
     ownerId,
     attempted,
     requestedAccount: options.accountName,
-    cwd: options.cwd,
+    cwd: effectiveCwd,
     now
   });
   const stopHeartbeat = startLeaseHeartbeat(paths, ownerId, now, leaseHeartbeatMs);
@@ -330,7 +333,7 @@ export async function runManagedCodex(
         adapter,
         account,
         codexArgs: options.codexArgs,
-        ...(options.cwd ? { cwd: options.cwd } : {}),
+        cwd: effectiveCwd,
         env,
         codexHome,
         input,
@@ -339,7 +342,7 @@ export async function runManagedCodex(
         customQuotaPatterns: reserved.accountsFile.customQuotaPatterns
       };
       if (hasInterruptedSession) {
-        attemptArgs.resume = sessionId ? { sessionId, prompt: 'Continue' } : { prompt: 'Continue' };
+        attemptArgs.resume = sessionId ? { sessionId, prompt: resumePrompt } : { prompt: resumePrompt };
       }
 
       await withStoreLock(paths, async () => {
@@ -351,7 +354,7 @@ export async function runManagedCodex(
       sessionId = result.sessionId ?? sessionId;
 
       if (!result.shouldRotate) {
-        await recordSuccessfulAttempt(paths, healthPath, account.name, now());
+        await recordSuccessfulAttempt(paths, healthPath, account.name, now(), true);
         restoreTerminal(outputStream);
         const success: SpawnResult = {
           exitCode: result.exitCode,
@@ -365,6 +368,12 @@ export async function runManagedCodex(
       }
 
       hasInterruptedSession = true;
+      await savePendingResume(paths, {
+        ...(sessionId ? { sessionId } : {}),
+        prompt: resumePrompt,
+        cwd: effectiveCwd,
+        updatedAt: now().toISOString()
+      });
       reserved = await recordFailedAttemptAndReserveNext({
         paths,
         healthPath,
@@ -373,7 +382,7 @@ export async function runManagedCodex(
         failedAccount: account,
         attempted,
         requestedAccount: options.accountName,
-        cwd: options.cwd,
+        cwd: effectiveCwd,
         result,
         now
       });
@@ -509,20 +518,63 @@ async function recordSuccessfulAttempt(
   paths: RunnerDataPaths,
   healthPath: string,
   accountName: string,
-  successAt: Date
+  successAt: Date,
+  clearPendingResume = false
 ): Promise<void> {
   await withStoreLock(paths, async () => {
     const accountsFile = await loadAccountsFile(paths.accounts);
     const accountIndex = getAccountIndex(accountsFile, accountName);
     const state = await loadStateFile(paths.state);
-    await saveStateFile(paths.state, {
+    const nextState: StateFile = {
       ...state,
       currentIndex: Math.max(0, accountIndex),
       lastSuccessfulAccount: accountName,
       updatedAt: successAt.toISOString()
-    });
+    };
+    if (clearPendingResume) {
+      delete nextState.pendingResume;
+    }
+    await saveStateFile(paths.state, nextState);
     await recordAccountSuccess(healthPath, accountName, successAt);
   });
+}
+
+async function loadPendingResumeForCwd(
+  paths: RunnerDataPaths,
+  cwd: string,
+  codexArgs: string[]
+): Promise<StateFile['pendingResume']> {
+  if (codexArgs.length > 0) {
+    return undefined;
+  }
+  return withStoreLock(paths, async () => {
+    const state = await loadStateFile(paths.state);
+    const pendingResume = state.pendingResume;
+    if (!pendingResume) {
+      return undefined;
+    }
+    if (pendingResume.cwd && !isSameCwd(pendingResume.cwd, cwd)) {
+      return undefined;
+    }
+    return pendingResume;
+  });
+}
+
+async function savePendingResume(paths: RunnerDataPaths, pendingResume: NonNullable<StateFile['pendingResume']>): Promise<void> {
+  await withStoreLock(paths, async () => {
+    const state = await loadStateFile(paths.state);
+    await saveStateFile(paths.state, {
+      ...state,
+      pendingResume,
+      updatedAt: pendingResume.updatedAt
+    });
+  });
+}
+
+function isSameCwd(left: string, right: string): boolean {
+  return process.platform === 'win32'
+    ? left.localeCompare(right, undefined, { sensitivity: 'accent' }) === 0
+    : left === right;
 }
 
 async function prepareCodexHomeForAccount(codexHome: string, account: RelayAccount): Promise<void> {
@@ -802,22 +854,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
     args.input.on('data', forwardInput);
     args.outputStream.on('resize', forwardResize);
 
-    handle.onData((chunk) => {
-      args.output(chunk);
-      outputDetectionBuffer = appendDetectionBuffer(outputDetectionBuffer, chunk);
-      sessionId = extractSessionId(outputDetectionBuffer) ?? sessionId;
-      const match = detectOutput(outputDetectionBuffer, args.customQuotaPatterns);
-      retryAfterMs = match.retryAfterMs ?? retryAfterMs;
-      reason = match.reason ?? reason;
-      if (match.confidence === 'high') {
-        shouldRotate = true;
-        handle.kill();
-      } else if (match.confidence === 'medium') {
-        mediumSignalSeen = true;
-      }
-    });
-
-    handle.onExit((exit) => {
+    const finish = (exit: { exitCode: number | null; signal: NodeJS.Signals | null }) => {
       if (settled) {
         return;
       }
@@ -834,7 +871,25 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
         ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
         ...(reason ? { reason } : {})
       });
+    };
+
+    handle.onData((chunk) => {
+      args.output(chunk);
+      outputDetectionBuffer = appendDetectionBuffer(outputDetectionBuffer, chunk);
+      sessionId = extractSessionId(outputDetectionBuffer) ?? sessionId;
+      const match = detectOutput(outputDetectionBuffer, args.customQuotaPatterns);
+      retryAfterMs = match.retryAfterMs ?? retryAfterMs;
+      reason = match.reason ?? reason;
+      if (match.confidence === 'high') {
+        shouldRotate = true;
+        handle.kill();
+        finish({ exitCode: 1, signal: null });
+      } else if (match.confidence === 'medium') {
+        mediumSignalSeen = true;
+      }
     });
+
+    handle.onExit(finish);
   });
 }
 

@@ -34,6 +34,7 @@ status: active
 - `src/core/runner.ts` resolves the Codex executable from `CODEX_RELAY_CODEX_PATH` first, then from `PATH`.
 - `list` shows active account leases as `in-use` so concurrent terminal allocation is visible.
 - `test` is a lightweight `/models` diagnostic; rotation decisions are based on actual Codex output.
+- The runner persists interrupted sessions in `state.json.pendingResume` and auto-resumes them on the next empty `codex-relay` launch when the cwd matches.
 
 ## Invariants
 

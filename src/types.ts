@@ -56,7 +56,15 @@ export interface StateFile {
   version: 1;
   currentIndex: number;
   lastSuccessfulAccount?: string;
+  pendingResume?: PendingResume;
   leases: Record<string, AccountLease>;
+  updatedAt: string;
+}
+
+export interface PendingResume {
+  sessionId?: string;
+  prompt: string;
+  cwd?: string;
   updatedAt: string;
 }
 
