@@ -21,9 +21,13 @@ const HIGH_PATTERNS: DetectionPattern[] = [
   { pattern: /HTTP\s*413/i, reason: 'quota' },
   { pattern: /status\s+413/i, reason: 'quota' },
   { pattern: /invalid\s+api\s+key/i, reason: 'auth' },
+  { pattern: /api\s*key.*(?:disabled|deactivated|revoked|blocked)/i, reason: 'auth' },
+  { pattern: /api\s*key.*(?:已被禁用|被禁用|已禁用|无效)/i, reason: 'auth' },
   { pattern: /unauthorized/i, reason: 'auth' },
+  { pattern: /forbidden/i, reason: 'auth' },
   { pattern: /HTTP\s*401/i, reason: 'auth' },
-  { pattern: /HTTP\s*403/i, reason: 'auth' }
+  { pattern: /HTTP\s*403/i, reason: 'auth' },
+  { pattern: /status\s+40[13]/i, reason: 'auth' }
 ];
 
 const MEDIUM_PATTERNS: DetectionPattern[] = [
@@ -39,7 +43,7 @@ const MEDIUM_PATTERNS: DetectionPattern[] = [
 
 const RETRY_AFTER_SECONDS = /retry\s+after\s+(\d+)\s*s/i;
 const AVAILABLE_IN = /available\s+in\s+(\d+)\s*(second|seconds|minute|minutes)/i;
-const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i;
+const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
 
 export function detectOutput(raw: string, customQuotaPatterns: string[] = []): DetectorMatch {
   const output = stripVTControlCharacters(raw);
