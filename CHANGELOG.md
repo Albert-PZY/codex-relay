@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.5](https://github.com/Albert-PZY/codex-relay/compare/v0.6.4...v0.6.5) (2026-05-23)
+
+
+### Bug Fixes
+
+* rotate on disabled relay keys ([d1ab5b1](https://github.com/Albert-PZY/codex-relay/commit/d1ab5b18c3bc2e4b21497fe2fa89c21398cc18bc))
+
 ## [0.6.4](https://github.com/Albert-PZY/codex-relay/compare/v0.6.3...v0.6.4) (2026-05-22)
 
 
