@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.6](https://github.com/Albert-PZY/codex-relay/compare/v0.6.5...v0.6.6) (2026-05-23)
+
+
+### Bug Fixes
+
+* resume interrupted sessions after rotation ([d5b3a94](https://github.com/Albert-PZY/codex-relay/commit/d5b3a94c16046473541a4570bc29cbd6bbe4b166))
+
 ## [0.6.5](https://github.com/Albert-PZY/codex-relay/compare/v0.6.4...v0.6.5) (2026-05-23)
 
 
