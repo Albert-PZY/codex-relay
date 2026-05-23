@@ -50,6 +50,26 @@ describe('state store', () => {
     expect(saved.currentIndex).toBe(1);
   });
 
+  it('persists pending resume metadata', async () => {
+    const state = await loadStateFile(statePath);
+    await saveStateFile(statePath, {
+      ...state,
+      pendingResume: {
+        sessionId: '019e365c-a287-74a3-890e-5b23a633f3c1',
+        prompt: 'Continue',
+        cwd: 'C:/workspace/project',
+        updatedAt: '2026-05-23T00:00:00.000Z'
+      }
+    });
+
+    const saved = await loadStateFile(statePath);
+    expect(saved.pendingResume).toMatchObject({
+      sessionId: '019e365c-a287-74a3-890e-5b23a633f3c1',
+      prompt: 'Continue',
+      cwd: 'C:/workspace/project'
+    });
+  });
+
   it('saves a state file with a generated timestamp when updatedAt is empty', async () => {
     const state = await loadStateFile(statePath);
     state.updatedAt = '';

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { readJsonFile, writeJsonAtomic } from '../utils/atomic.js';
-import type { AccountLease, StateFile } from '../types.js';
+import type { AccountLease, PendingResume, StateFile } from '../types.js';
 
 const accountLeaseSchema = z.object({
   accountName: z.string().trim().min(1),
@@ -16,8 +16,16 @@ const stateFileSchema = z.object({
   version: z.literal(1),
   currentIndex: z.number().int().min(0),
   lastSuccessfulAccount: z.string().trim().min(1).optional(),
+  pendingResume: z.unknown().optional(),
   leases: z.record(z.string(), z.unknown()),
   updatedAt: z.string().optional()
+}).strict();
+
+const pendingResumeSchema = z.object({
+  sessionId: z.string().trim().min(1).optional(),
+  prompt: z.string().trim().min(1),
+  cwd: z.string().trim().min(1).optional(),
+  updatedAt: z.string().datetime()
 }).strict();
 
 export async function loadStateFile(filePath: string): Promise<StateFile> {
@@ -91,6 +99,14 @@ function normalizeStateFile(raw: unknown): { file: StateFile; repaired: boolean 
   if (result.data.lastSuccessfulAccount) {
     state.lastSuccessfulAccount = result.data.lastSuccessfulAccount;
   }
+  if (result.data.pendingResume !== undefined) {
+    const pendingResume = pendingResumeSchema.safeParse(result.data.pendingResume);
+    if (pendingResume.success) {
+      state.pendingResume = normalizePendingResume(pendingResume.data);
+    } else {
+      repaired = true;
+    }
+  }
   return { file: state, repaired };
 }
 
@@ -107,6 +123,22 @@ function normalizeAccountLease(lease: ParsedAccountLease): AccountLease {
   };
   if (lease.cwd) {
     normalized.cwd = lease.cwd;
+  }
+  return normalized;
+}
+
+type ParsedPendingResume = z.infer<typeof pendingResumeSchema>;
+
+function normalizePendingResume(pendingResume: ParsedPendingResume): PendingResume {
+  const normalized: PendingResume = {
+    prompt: pendingResume.prompt,
+    updatedAt: pendingResume.updatedAt
+  };
+  if (pendingResume.sessionId) {
+    normalized.sessionId = pendingResume.sessionId;
+  }
+  if (pendingResume.cwd) {
+    normalized.cwd = pendingResume.cwd;
   }
   return normalized;
 }

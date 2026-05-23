@@ -30,7 +30,8 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 - `accounts.json` contains `version`, `preferred`, `customQuotaPatterns`, and `accounts`.
 - Each account contains `name`, `apiKey`, `baseUrl`, optional `model`, and `addedAt`.
 - Import files use a top-level JSON array; each item contains `baseUrl`, `apiKey`, optional `name`, and optional `model`.
-- `state.json` contains `version`, `currentIndex`, optional `lastSuccessfulAccount`, `leases`, and `updatedAt`.
+- `state.json` contains `version`, `currentIndex`, optional `lastSuccessfulAccount`, optional `pendingResume`, `leases`, and `updatedAt`.
+- `pendingResume` records an interrupted Codex session with optional `sessionId`, `prompt`, optional `cwd`, and `updatedAt` so the next matching empty `codex-relay` launch can resume automatically.
 - `leases` records active local runner sessions with `ownerId`, `accountName`, `pid`, optional `cwd`, `startedAt`, `updatedAt`, and `expiresAt`.
 - `health.json` contains `version`, `accounts`, `retired`, and `updatedAt`.
 - Active health records contain `status`, `consecutiveFailures`, optional `baseUrl`, `reason`, failure timestamps, success timestamp, and `cooldownUntil`.

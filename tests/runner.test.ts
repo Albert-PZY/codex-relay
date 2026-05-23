@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addAccount } from '../src/core/accounts.js';
 import { loadHealthFile, recordAccountFailure } from '../src/core/health.js';
-import { loadStateFile } from '../src/core/state.js';
+import { loadStateFile, saveStateFile } from '../src/core/state.js';
 import {
   buildCodexArgs,
   buildCodexEnv,
@@ -470,6 +470,50 @@ describe('runner', () => {
     expect(log).toContain('resume=session');
   });
 
+  it('continues rotation even when the killed TUI does not emit an exit event', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://right.codes/codex/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
+    const adapter = new FakeAdapter([
+      {
+        chunks: [
+          `Context 5% used  ${sessionId}\n`,
+          'Unexpected status 403 Forbidden: {"error":"API Key 已被禁用"}\n'
+        ],
+        exitCode: 1,
+        emitExitOnKill: false
+      },
+      ['continued\n']
+    ]);
+
+    const result = await runManagedCodex(
+      {
+        codexArgs: ['do task'],
+        accountName: 'relay-a'
+      },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
+    expect(adapter.handles[0]?.killed).toBe(true);
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
+  });
+
   it('shows the current relay account with a masked key before launching codex', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
@@ -527,6 +571,46 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('resume');
     expect(adapter.spawns[1]?.args).toContain('--last');
     expect(adapter.spawns[1]?.args).toContain('Continue');
+  });
+
+  it('automatically resumes a pending interrupted session on the next empty launch', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+
+    const cwd = '/workspace/project';
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
+    await saveStateFile(statePath, {
+      version: 1,
+      currentIndex: 0,
+      leases: {},
+      pendingResume: {
+        sessionId,
+        prompt: 'Continue',
+        cwd,
+        updatedAt: '2026-05-23T00:00:00.000Z'
+      },
+      updatedAt: '2026-05-23T00:00:00.000Z'
+    });
+
+    const adapter = new FakeAdapter([['continued\n']]);
+
+    await runManagedCodex(
+      { codexArgs: [], cwd },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(adapter.spawns).toHaveLength(1);
+    expect(adapter.spawns[0]?.args).toContain('resume');
+    expect(adapter.spawns[0]?.args).toContain(sessionId);
+    expect(adapter.spawns[0]?.args).toContain('Continue');
+    expect((await loadStateFile(statePath)).pendingResume).toBeUndefined();
   });
 
   it('rotates on payload tier limit errors and shows the switch in output', async () => {
@@ -1273,7 +1357,7 @@ describe('runner', () => {
   });
 });
 
-type FakeScript = string[] | { chunks: string[]; exitCode: number; autoExit?: boolean };
+type FakeScript = string[] | { chunks: string[]; exitCode: number; autoExit?: boolean; emitExitOnKill?: boolean };
 
 class FakeAdapter implements ProcessAdapter {
   public readonly supportsInteractiveTui = true;
@@ -1298,7 +1382,7 @@ class FakeAdapter implements ProcessAdapter {
     const script = this.scripts.shift() ?? [];
     const handle = Array.isArray(script)
       ? new FakeHandle(script, 0)
-      : new FakeHandle(script.chunks, script.exitCode, script.autoExit ?? true);
+      : new FakeHandle(script.chunks, script.exitCode, script.autoExit ?? true, script.emitExitOnKill ?? true);
     this.handles.push(handle);
     this.waiters.shift()?.(handle);
     handle.start();
@@ -1323,7 +1407,8 @@ class FakeHandle extends EventEmitter implements ProcessHandle {
   constructor(
     private readonly chunks: string[],
     private readonly exitCode: number,
-    private readonly autoExit = true
+    private readonly autoExit = true,
+    private readonly emitExitOnKill = true
   ) {
     super();
   }
@@ -1352,7 +1437,9 @@ class FakeHandle extends EventEmitter implements ProcessHandle {
 
   kill(): void {
     this.killed = true;
-    this.emit('exit', { exitCode: 1, signal: null });
+    if (this.emitExitOnKill) {
+      this.emit('exit', { exitCode: 1, signal: null });
+    }
   }
 
   resize(cols: number, rows: number): void {
