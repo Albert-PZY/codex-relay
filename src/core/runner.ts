@@ -115,6 +115,7 @@ const codexOptionsWithValue = new Set([
 ]);
 const ACCOUNT_LEASE_TTL_MS = 2 * 60 * 1000;
 const ACCOUNT_LEASE_HEARTBEAT_MS = 30 * 1000;
+const OUTPUT_DETECTION_BUFFER_LIMIT = 8192;
 
 export function resolveCodexSpawnTarget(
   env: NodeJS.ProcessEnv = process.env,
@@ -781,6 +782,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
     let sessionId: string | undefined;
     let retryAfterMs: number | undefined;
     let reason: HealthFailureReason | undefined;
+    let outputDetectionBuffer = '';
     const terminalSize = getTerminalSize(args.outputStream);
     const spawnOptions: SpawnOptions = {
       env: buildCodexEnv(args.account, args.env, args.codexHome),
@@ -802,8 +804,9 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
 
     handle.onData((chunk) => {
       args.output(chunk);
-      sessionId = extractSessionId(chunk) ?? sessionId;
-      const match = detectOutput(chunk, args.customQuotaPatterns);
+      outputDetectionBuffer = appendDetectionBuffer(outputDetectionBuffer, chunk);
+      sessionId = extractSessionId(outputDetectionBuffer) ?? sessionId;
+      const match = detectOutput(outputDetectionBuffer, args.customQuotaPatterns);
       retryAfterMs = match.retryAfterMs ?? retryAfterMs;
       reason = match.reason ?? reason;
       if (match.confidence === 'high') {
@@ -833,6 +836,13 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       });
     });
   });
+}
+
+function appendDetectionBuffer(current: string, chunk: string): string {
+  const next = `${current}${chunk}`;
+  return next.length <= OUTPUT_DETECTION_BUFFER_LIMIT
+    ? next
+    : next.slice(next.length - OUTPUT_DETECTION_BUFFER_LIMIT);
 }
 
 function isInteractiveTuiAttempt(codexArgs: string[], resume?: { sessionId?: string; prompt: string }): boolean {

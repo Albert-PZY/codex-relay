@@ -420,6 +420,56 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('Continue');
   });
 
+  it('rotates on relay-disabled API key output and resumes a UUID v7 session from buffered chunks', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://right.codes/codex/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
+    const output: string[] = [];
+    const adapter = new FakeAdapter([
+      [
+        `Context 5% used  ${sessionId}\n`,
+        'unexpected status 403 ',
+        'Forbidden: {"error":"API Key 已被禁用"}, url: https://right.codes/codex/v1/responses\n'
+      ],
+      ['continued\n']
+    ]);
+
+    const result = await runManagedCodex(
+      {
+        codexArgs: ['do task'],
+        accountName: 'relay-a'
+      },
+      {
+        paths: { accounts: accountsPath, state: statePath, rotationLog: rotationLogPath },
+        adapter,
+        output: (chunk) => output.push(chunk)
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
+    expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
+    expect(adapter.spawns[1]?.env.OPENAI_API_KEY).toBe('sk-b');
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
+    expect(adapter.spawns[1]?.args).toContain('Continue');
+    expect(output.join('')).toContain('[codex-relay] relay-a failed (auth); switching to relay-b');
+
+    const log = await readFile(rotationLogPath, 'utf8');
+    expect(log).toContain('relay-a -> relay-b');
+    expect(log).toContain('reason=auth');
+    expect(log).toContain('resume=session');
+  });
+
   it('shows the current relay account with a masked key before launching codex', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',

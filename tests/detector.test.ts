@@ -18,6 +18,12 @@ describe('quota detector', () => {
       confidence: 'high',
       reason: 'auth'
     });
+    expect(
+      detectOutput('unexpected status 403 Forbidden: {"error":"API Key 已被禁用"}')
+    ).toMatchObject({
+      confidence: 'high',
+      reason: 'auth'
+    });
   });
 
   it('detects payload and tier limit failures as quota signals', () => {
@@ -68,9 +74,11 @@ describe('quota detector', () => {
 
   it('extracts codex session ids from output', () => {
     const id = '123e4567-e89b-12d3-a456-426614174000';
+    const v7 = '019e365c-a287-74a3-890e-5b23a633f3c1';
 
     expect(extractSessionId(`session_id: ${id}`)).toBe(id);
     expect(extractSessionId(`Conversation ID ${id}`)).toBe(id);
+    expect(extractSessionId(`Context 5% used  ${v7}`)).toBe(v7);
   });
 
   it('ignores normal transcript text', () => {
