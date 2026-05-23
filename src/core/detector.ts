@@ -35,6 +35,8 @@ const MEDIUM_PATTERNS: DetectionPattern[] = [
   { pattern: /too\s+many\s+requests/i, reason: 'rate_limit' },
   { pattern: /HTTP\s*429/i, reason: 'rate_limit' },
   { pattern: /please\s+try\s+again/i, reason: 'rate_limit' },
+  { pattern: /unexpected\s+status/i, reason: 'unknown' },
+  { pattern: /conversation\s+interrupted/i, reason: 'unknown' },
   { pattern: /temporarily\s+unavailable/i, reason: 'server' },
   { pattern: /model.*not.*available/i, reason: 'server' },
   { pattern: /upstream.*error/i, reason: 'server' },

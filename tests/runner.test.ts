@@ -514,6 +514,45 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain(sessionId);
   });
 
+  it('rotates on conversation interruption text and falls back to the latest session when needed', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://right.codes/codex/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
+    const adapter = new FakeAdapter([
+      [
+        `Conversation interrupted - tell the model what to do differently.\n`,
+        `Unexpected status 403 Forbidden: {"error":"API Key 已被禁用"}\n`,
+        `Context 4% used  ${sessionId}\n`
+      ],
+      ['continued\n']
+    ]);
+
+    const result = await runManagedCodex(
+      { codexArgs: ['do task'], cwd: '/workspace/project', accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain('--last');
+    expect(adapter.spawns[1]?.args).toContain('Continue');
+    expect((await loadStateFile(statePath)).pendingResume).toBeUndefined();
+  });
+
   it('shows the current relay account with a masked key before launching codex', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
