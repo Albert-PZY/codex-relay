@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.7](https://github.com/Albert-PZY/codex-relay/compare/v0.6.6...v0.6.7) (2026-05-23)
+
+
+### Bug Fixes
+
+* keep rotation fallback alive ([7354f43](https://github.com/Albert-PZY/codex-relay/commit/7354f4382525189f48f3a92b60004005f1186377))
+
 ## [0.6.6](https://github.com/Albert-PZY/codex-relay/compare/v0.6.5...v0.6.6) (2026-05-23)
 
 
