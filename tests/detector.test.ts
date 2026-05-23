@@ -42,6 +42,10 @@ describe('quota detector', () => {
       confidence: 'medium',
       reason: 'rate_limit'
     });
+    expect(detectOutput('Conversation interrupted - tell the model what to do differently.')).toMatchObject({
+      confidence: 'medium',
+      reason: 'unknown'
+    });
   });
 
   it('classifies temporary upstream errors as server failures', () => {

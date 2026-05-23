@@ -116,6 +116,7 @@ const codexOptionsWithValue = new Set([
 const ACCOUNT_LEASE_TTL_MS = 2 * 60 * 1000;
 const ACCOUNT_LEASE_HEARTBEAT_MS = 30 * 1000;
 const OUTPUT_DETECTION_BUFFER_LIMIT = 8192;
+const ROTATION_EXIT_FALLBACK_MS = 250;
 
 export function resolveCodexSpawnTarget(
   env: NodeJS.ProcessEnv = process.env,
@@ -835,6 +836,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
     let retryAfterMs: number | undefined;
     let reason: HealthFailureReason | undefined;
     let outputDetectionBuffer = '';
+    let rotationFallback: NodeJS.Timeout | undefined;
     const terminalSize = getTerminalSize(args.outputStream);
     const spawnOptions: SpawnOptions = {
       env: buildCodexEnv(args.account, args.env, args.codexHome),
@@ -859,6 +861,10 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
         return;
       }
       settled = true;
+      if (rotationFallback) {
+        clearTimeout(rotationFallback);
+        rotationFallback = undefined;
+      }
       args.input.off('data', forwardInput);
       args.outputStream.off('resize', forwardResize);
       restoreInputMode?.();
@@ -883,7 +889,11 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       if (match.confidence === 'high') {
         shouldRotate = true;
         handle.kill();
-        finish({ exitCode: 1, signal: null });
+        if (!rotationFallback) {
+          rotationFallback = setTimeout(() => {
+            finish({ exitCode: 1, signal: null });
+          }, ROTATION_EXIT_FALLBACK_MS);
+        }
       } else if (match.confidence === 'medium') {
         mediumSignalSeen = true;
       }
