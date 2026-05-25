@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.10](https://github.com/Albert-PZY/codex-relay/compare/v0.6.9...v0.6.10) (2026-05-25)
+
+
+### Bug Fixes
+
+* write structured rotation logs ([f965a7b](https://github.com/Albert-PZY/codex-relay/commit/f965a7b92cd8229d36769aed1ce6f0503fb25372))
+
 ## [0.6.9](https://github.com/Albert-PZY/codex-relay/compare/v0.6.8...v0.6.9) (2026-05-25)
 
 
