@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.9](https://github.com/Albert-PZY/codex-relay/compare/v0.6.8...v0.6.9) (2026-05-25)
+
+
+### Bug Fixes
+
+* show relay account during resumed sessions ([e78af27](https://github.com/Albert-PZY/codex-relay/commit/e78af275180b539e0f7c9536957b0e548cd55c6f))
+
 ## [0.6.8](https://github.com/Albert-PZY/codex-relay/compare/v0.6.7...v0.6.8) (2026-05-25)
 
 
