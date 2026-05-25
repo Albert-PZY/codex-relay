@@ -30,8 +30,8 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 - `accounts.json` contains `version`, `preferred`, `customQuotaPatterns`, and `accounts`.
 - Each account contains `name`, `apiKey`, `baseUrl`, optional `model`, and `addedAt`.
 - Import files use a top-level JSON array; each item contains `baseUrl`, `apiKey`, optional `name`, and optional `model`.
-- `state.json` contains `version`, `currentIndex`, optional `lastSuccessfulAccount`, optional `pendingResume`, `leases`, and `updatedAt`.
-- `pendingResume` records an interrupted Codex session with `sessionId`, `prompt`, optional `cwd`, and `updatedAt` so the next matching empty `codex-relay` launch can resume automatically.
+- `state.json` contains `version`, `currentIndex`, optional `lastSuccessfulAccount`, optional `pendingResumes`, `leases`, and `updatedAt`.
+- `pendingResumes` maps normalized working-directory keys to interrupted Codex sessions with `sessionId`, `prompt`, optional `cwd`, and `updatedAt`.
 - `leases` records active local runner sessions with `ownerId`, `accountName`, `pid`, optional `cwd`, `startedAt`, `updatedAt`, and `expiresAt`.
 - `health.json` contains `version`, `accounts`, `retired`, and `updatedAt`.
 - Active health records contain `status`, `consecutiveFailures`, optional `baseUrl`, `reason`, failure timestamps, success timestamp, and `cooldownUntil`.
@@ -45,6 +45,7 @@ The CLI stores account pool data and runtime rotation state under the user's hom
 - Shared store writes are serialized through `store.lock`, then written atomically through a temporary file plus rename.
 - Concurrent runner sessions should prefer unleased accounts. Sharing an account is a fallback only when all available accounts are already leased.
 - Leases are short-lived and expire automatically if a terminal exits unexpectedly.
+- Pending resumes are scoped by working directory. A launch in one project must not consume or delete another project's pending resume.
 - A runner must update the run-scoped Codex home before every attempt so `auth.json` and provider `base_url` match the selected account.
 - A cooldown account becomes selectable again after `cooldownUntil`.
 - An account that remains in cooldown continuously for 10 days is removed from `accounts.json` and recorded under `health.json.retired`.

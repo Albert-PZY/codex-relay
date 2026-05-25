@@ -56,7 +56,7 @@ export interface StateFile {
   version: 1;
   currentIndex: number;
   lastSuccessfulAccount?: string;
-  pendingResume?: PendingResume;
+  pendingResumes?: Record<string, PendingResume>;
   leases: Record<string, AccountLease>;
   updatedAt: string;
 }
@@ -79,6 +79,7 @@ export interface RunnerOptions {
   accountName?: string;
   codexArgs: string[];
   cwd?: string;
+  disableResume?: boolean;
 }
 
 export interface SpawnResult {
