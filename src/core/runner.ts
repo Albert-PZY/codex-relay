@@ -354,6 +354,7 @@ export async function runManagedCodex(
       };
       if (sessionId) {
         attemptArgs.resume = { sessionId, prompt: resumePrompt };
+        attemptArgs.inlineNotice = formatInlineAccountNotice(account);
       }
 
       if (!overlayPrepared) {
@@ -1211,6 +1212,11 @@ function formatAccountNotice(account: RelayAccount, isResume: boolean): string {
   return `\n[codex-relay] ${action} ${account.name} (key ${maskApiKey(account.apiKey)}, baseUrl ${account.baseUrl}${model}).\n`;
 }
 
+function formatInlineAccountNotice(account: RelayAccount): string {
+  const model = account.model ? `, model ${account.model}` : '';
+  return `\r\n[codex-relay] active relay account: ${account.name} (key ${maskApiKey(account.apiKey)}, baseUrl ${account.baseUrl}${model}).\r\n`;
+}
+
 function maskApiKey(apiKey: string): string {
   const key = apiKey.trim();
   if (key.length <= 4) {
@@ -1234,6 +1240,7 @@ interface RunAttemptArgs {
   outputStream: NodeJS.WriteStream;
   customQuotaPatterns: string[];
   resume?: ResumeRequest;
+  inlineNotice?: string;
 }
 
 async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
@@ -1249,6 +1256,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
     let retryAfterMs: number | undefined;
     let reason: HealthFailureReason | undefined;
     let outputDetectionBuffer = '';
+    let inlineNoticeWritten = false;
     let rotationFallback: NodeJS.Timeout | undefined;
     let gracefulRotationTimer: NodeJS.Timeout | undefined;
     const terminalSize = getTerminalSize(args.outputStream);
@@ -1299,6 +1307,10 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
 
     handle.onData((chunk) => {
       args.output(chunk);
+      if (args.inlineNotice && !inlineNoticeWritten) {
+        inlineNoticeWritten = true;
+        args.output(args.inlineNotice);
+      }
       outputDetectionBuffer = appendDetectionBuffer(outputDetectionBuffer, chunk);
       sessionId = extractSessionId(outputDetectionBuffer) ?? sessionId;
       const match = detectOutput(outputDetectionBuffer, args.customQuotaPatterns);

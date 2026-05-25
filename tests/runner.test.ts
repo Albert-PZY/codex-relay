@@ -431,6 +431,47 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('Continue');
   });
 
+  it('prints the active relay account inside resumed codex output after rotation', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-1234567890abcdef',
+      baseUrl: 'https://b.example.com/v1',
+      model: 'gpt-5.2'
+    });
+
+    const sessionId = '123e4567-e89b-12d3-a456-426614174000';
+    const output: string[] = [];
+    const adapter = new FakeAdapter([
+      [`session_id: ${sessionId}\n`, 'Error: insufficient balance\n'],
+      ['continued\n']
+    ]);
+
+    await runManagedCodex(
+      {
+        codexArgs: ['do task'],
+        accountName: 'relay-a'
+      },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: (chunk) => output.push(chunk)
+      }
+    );
+
+    const text = output.join('');
+    expect(text).toContain('continued\n');
+    expect(text).toContain('[codex-relay] active relay account: relay-b');
+    expect(text).toContain('key sk-...cdef');
+    expect(text).toContain('baseUrl https://b.example.com/v1');
+    expect(text).toContain('model gpt-5.2');
+    expect(text).not.toContain('sk-1234567890abcdef');
+  });
+
   it('rotates on relay-disabled API key output and resumes a UUID v7 session from buffered chunks', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
