@@ -16,7 +16,7 @@ const stateFileSchema = z.object({
   version: z.literal(1),
   currentIndex: z.number().int().min(0),
   lastSuccessfulAccount: z.string().trim().min(1).optional(),
-  pendingResume: z.unknown().optional(),
+  pendingResumes: z.record(z.string(), z.unknown()).optional(),
   leases: z.record(z.string(), z.unknown()),
   updatedAt: z.string().optional()
 }).strict();
@@ -99,13 +99,19 @@ function normalizeStateFile(raw: unknown): { file: StateFile; repaired: boolean 
   if (result.data.lastSuccessfulAccount) {
     state.lastSuccessfulAccount = result.data.lastSuccessfulAccount;
   }
-  if (result.data.pendingResume !== undefined) {
-    const pendingResume = pendingResumeSchema.safeParse(result.data.pendingResume);
-    if (pendingResume.success) {
-      state.pendingResume = normalizePendingResume(pendingResume.data);
-    } else {
-      repaired = true;
+  const pendingResumes: Record<string, PendingResume> = {};
+  if (result.data.pendingResumes) {
+    for (const [key, rawPendingResume] of Object.entries(result.data.pendingResumes)) {
+      const pendingResume = pendingResumeSchema.safeParse(rawPendingResume);
+      if (pendingResume.success) {
+        pendingResumes[key] = normalizePendingResume(pendingResume.data);
+      } else {
+        repaired = true;
+      }
     }
+  }
+  if (Object.keys(pendingResumes).length > 0) {
+    state.pendingResumes = pendingResumes;
   }
   return { file: state, repaired };
 }

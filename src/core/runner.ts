@@ -23,7 +23,7 @@ import { withStoreLock } from './store-lock.js';
 import { readJsonFile, writeJsonAtomic, writeTextAtomic } from '../utils/atomic.js';
 import { resolveDataPaths, type DataPaths } from '../utils/paths.js';
 import { restoreTerminal } from '../utils/terminal.js';
-import type { AccountLease, AccountsFile, HealthFailureReason, HealthFile, RelayAccount, RunnerOptions, SpawnResult, StateFile } from '../types.js';
+import type { AccountLease, AccountsFile, HealthFailureReason, HealthFile, PendingResume, RelayAccount, RunnerOptions, SpawnResult, StateFile } from '../types.js';
 
 export interface ProcessHandle {
   onData(callback: (chunk: string) => void): void;
@@ -316,7 +316,7 @@ export async function runManagedCodex(
   const sourceCodexHome = resolveCodexHomePath(paths);
   const instanceDir = resolveInstanceCodexHome(paths, runId);
   const effectiveCwd = options.cwd ?? process.cwd();
-  const pendingResume = await loadPendingResumeForCwd(paths, effectiveCwd, options.codexArgs);
+  const pendingResume = options.disableResume ? undefined : await loadPendingResumeForCwd(paths, effectiveCwd, options.codexArgs);
   let sessionId = pendingResume?.sessionId;
   const resumePrompt = pendingResume?.prompt ?? 'Continue';
   const attempted = new Set<string>();
@@ -389,7 +389,7 @@ export async function runManagedCodex(
       }
 
       if (!result.shouldRotate) {
-        await recordSuccessfulAttempt(paths, healthPath, account.name, now(), true);
+        await recordSuccessfulAttempt(paths, healthPath, account.name, now(), options.disableResume ? undefined : effectiveCwd);
         restoreTerminal(outputStream);
         const success: SpawnResult = {
           exitCode: result.exitCode,
@@ -582,7 +582,7 @@ async function recordSuccessfulAttempt(
   healthPath: string,
   accountName: string,
   successAt: Date,
-  clearPendingResume = false
+  clearPendingResumeCwd?: string | undefined
 ): Promise<void> {
   await withStoreLock(paths, async () => {
     const accountsFile = await loadAccountsFile(paths.accounts);
@@ -594,8 +594,13 @@ async function recordSuccessfulAttempt(
       lastSuccessfulAccount: accountName,
       updatedAt: successAt.toISOString()
     };
-    if (clearPendingResume) {
-      delete nextState.pendingResume;
+    if (clearPendingResumeCwd !== undefined) {
+      const pendingResumes = removePendingResumeForCwd(nextState.pendingResumes, clearPendingResumeCwd);
+      if (pendingResumes) {
+        nextState.pendingResumes = pendingResumes;
+      } else {
+        delete nextState.pendingResumes;
+      }
     }
     await saveStateFile(paths.state, nextState);
     await recordAccountSuccess(healthPath, accountName, successAt);
@@ -606,13 +611,13 @@ async function loadPendingResumeForCwd(
   paths: RunnerDataPaths,
   cwd: string,
   codexArgs: string[]
-): Promise<StateFile['pendingResume']> {
+): Promise<PendingResume | undefined> {
   if (codexArgs.length > 0) {
     return undefined;
   }
   return withStoreLock(paths, async () => {
     const state = await loadStateFile(paths.state);
-    const pendingResume = state.pendingResume;
+    const pendingResume = getPendingResumeForCwd(state, cwd);
     if (!pendingResume) {
       return undefined;
     }
@@ -623,15 +628,40 @@ async function loadPendingResumeForCwd(
   });
 }
 
-async function savePendingResume(paths: RunnerDataPaths, pendingResume: NonNullable<StateFile['pendingResume']>): Promise<void> {
+async function savePendingResume(paths: RunnerDataPaths, pendingResume: PendingResume): Promise<void> {
   await withStoreLock(paths, async () => {
     const state = await loadStateFile(paths.state);
+    const pendingResumes = {
+      ...(state.pendingResumes ?? {}),
+      [pendingResumeKey(pendingResume.cwd)]: pendingResume
+    };
     await saveStateFile(paths.state, {
       ...state,
-      pendingResume,
+      pendingResumes,
       updatedAt: pendingResume.updatedAt
     });
   });
+}
+
+function getPendingResumeForCwd(state: StateFile, cwd: string): PendingResume | undefined {
+  const pendingResumes = state.pendingResumes ?? {};
+  return pendingResumes[pendingResumeKey(cwd)];
+}
+
+function removePendingResumeForCwd(
+  pendingResumes: StateFile['pendingResumes'],
+  cwd: string
+): StateFile['pendingResumes'] {
+  if (!pendingResumes) {
+    return undefined;
+  }
+  const next = { ...pendingResumes };
+  delete next[pendingResumeKey(cwd)];
+  return next;
+}
+
+function pendingResumeKey(cwd: string | undefined): string {
+  return cwd?.trim().toLowerCase() || '__global__';
 }
 
 function isSameCwd(left: string, right: string): boolean {
@@ -1272,7 +1302,13 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       spawnOptions.cwd = args.cwd;
     }
     const handle = args.adapter.spawn('codex', buildCodexArgs(args.account, args.codexArgs, args.resume), spawnOptions);
-    const forwardInput = (chunk: Buffer | string) => handle.write?.(chunk);
+    let userExitRequested = false;
+    const forwardInput = (chunk: Buffer | string) => {
+      if (isUserExitInput(chunk)) {
+        userExitRequested = true;
+      }
+      handle.write?.(chunk);
+    };
     const restoreInputMode = enterRawMode(args.input);
     const forwardResize = () => {
       const nextSize = getTerminalSize(args.outputStream);
@@ -1301,7 +1337,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       resolve({
         exitCode: exit.exitCode,
         signal: exit.signal,
-        shouldRotate: shouldRotate || (mediumSignalSeen && failed),
+        shouldRotate: userExitRequested ? false : shouldRotate || (mediumSignalSeen && failed),
         ...(sessionId ? { sessionId } : {}),
         ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
         ...(reason ? { reason } : {})
@@ -1340,6 +1376,11 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
 
     handle.onExit(finish);
   });
+}
+
+function isUserExitInput(chunk: Buffer | string): boolean {
+  const text = chunk.toString();
+  return text.includes('\u0003') || text.includes('\u0004');
 }
 
 function appendDetectionBuffer(current: string, chunk: string): string {

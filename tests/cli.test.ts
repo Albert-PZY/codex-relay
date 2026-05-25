@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCliProgram, main } from '../src/cli.js';
 import { loadAccountsFile } from '../src/core/accounts.js';
-import { recordAccountFailure } from '../src/core/health.js';
+import { loadHealthFile, recordAccountFailure, saveHealthFile } from '../src/core/health.js';
+import { loadStateFile, saveStateFile } from '../src/core/state.js';
 
 const promptQuestion = vi.hoisted(() => vi.fn());
 const promptClose = vi.hoisted(() => vi.fn());
@@ -20,6 +21,9 @@ const tmpDir = fileURLToPath(new URL('./tmp-cli/', import.meta.url));
 const accountsPath = join(tmpDir, 'accounts.json');
 const statePath = join(tmpDir, 'state.json');
 const healthPath = join(tmpDir, 'health.json');
+const rotationLogPath = join(tmpDir, 'rotation.log');
+const instancesPath = join(tmpDir, 'instances');
+const codexHomePath = join(tmpDir, 'codex-home');
 
 afterEach(async () => {
   await rm(tmpDir, { recursive: true, force: true });
@@ -111,6 +115,18 @@ describe('cli', () => {
     expect(file.preferred).toBe('relay-b');
     expect(file.accounts.map((account) => account.name)).toEqual(['relay-b']);
     expect(output.join('\n')).toContain('* relay-b');
+  });
+
+  it('prints an empty account list message', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'list']);
+
+    expect(output).toEqual(['No accounts configured.']);
   });
 
   it('shows health cooldown status in the account list', async () => {
@@ -215,10 +231,27 @@ describe('cli', () => {
       reason: 'quota',
       now: new Date('2026-05-19T00:00:00.000Z')
     });
+    const health = await loadHealthFile(healthPath);
+    await saveHealthFile(healthPath, {
+      version: 1,
+      accounts: health.accounts,
+      retired: [
+        {
+          name: 'relay-old',
+          baseUrl: 'https://old.example.com/v1',
+          reason: 'auth',
+          firstFailedAt: '2026-05-01T00:00:00.000Z',
+          lastFailedAt: '2026-05-10T00:00:00.000Z',
+          removedAt: '2026-05-11T00:00:00.000Z'
+        }
+      ],
+      updatedAt: '2026-05-19T00:00:00.000Z'
+    });
     await program.parseAsync(['node', 'codex-relay', 'health']);
 
     expect(output.join('\n')).toContain('relay-a cooldown quota until');
     expect(output.join('\n')).toContain('relay-b active');
+    expect(output.join('\n')).toContain('relay-old retired auth at 2026-05-11T00:00:00.000Z');
   });
 
   it('prints an empty health message when there are no accounts or records', async () => {
@@ -231,6 +264,201 @@ describe('cli', () => {
     await program.parseAsync(['node', 'codex-relay', 'health']);
 
     expect(output).toEqual(['No health records.']);
+  });
+
+  it('prints local diagnostics with doctor', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: {
+        root: tmpDir,
+        accounts: accountsPath,
+        state: statePath,
+        health: healthPath,
+        rotationLog: rotationLogPath,
+        instances: instancesPath,
+        codexHome: codexHomePath
+      },
+      output: (text) => output.push(text),
+      env: { PATH: '' }
+    });
+    await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
+    await saveStateFile(statePath, {
+      version: 1,
+      currentIndex: 0,
+      lastSuccessfulAccount: 'relay-a',
+      leases: {
+        owner: {
+          accountName: 'relay-a',
+          ownerId: 'owner',
+          pid: 123,
+          cwd: 'C:/workspace/project',
+          startedAt: '2026-05-23T00:00:00.000Z',
+          updatedAt: '2026-05-23T00:00:00.000Z',
+          expiresAt: '2099-01-01T00:00:00.000Z'
+        }
+      },
+      pendingResumes: {
+        'c:/workspace/project': {
+          sessionId: '019e365c-a287-74a3-890e-5b23a633f3c1',
+          prompt: 'Continue',
+          cwd: 'C:/workspace/project',
+          updatedAt: '2026-05-23T00:00:00.000Z'
+        }
+      },
+      updatedAt: '2026-05-23T00:00:00.000Z'
+    });
+    await mkdir(instancesPath, { recursive: true });
+    await mkdir(join(instancesPath, 'stale'), { recursive: true });
+    await writeFile(rotationLogPath, '{"event":"account_rotation"}\n', 'utf8');
+
+    await program.parseAsync(['node', 'codex-relay', 'doctor']);
+
+    const text = output.join('\n');
+    expect(text).toContain('codex-relay doctor');
+    expect(text).toContain('accounts: 1 total');
+    expect(text).toContain('pending resumes: 1');
+    expect(text).toContain('active leases: 1');
+    expect(text).toContain('stale instance dirs: 1');
+    expect(text).toContain('last rotation: {"event":"account_rotation"}');
+    expect(text).toContain('network probe: skipped');
+  });
+
+  it('prints diagnostics when optional runtime files are missing', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: {
+        root: tmpDir,
+        accounts: accountsPath,
+        state: statePath,
+        health: healthPath,
+        rotationLog: rotationLogPath,
+        instances: instancesPath,
+        codexHome: codexHomePath
+      },
+      output: (text) => output.push(text),
+      env: { PATH: '' }
+    });
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        currentIndex: 0,
+        leases: {},
+        pendingResumes: {
+          'c:/workspace/project': {
+            sessionId: '019e365c-a287-74a3-890e-5b23a633f3c1',
+            prompt: 'Continue',
+            cwd: 'C:/workspace/project',
+            updatedAt: '2026-05-23T00:00:00.000Z'
+          }
+        },
+        updatedAt: '2026-05-23T00:00:00.000Z'
+      }),
+      'utf8'
+    );
+
+    await program.parseAsync(['node', 'codex-relay', 'doctor']);
+
+    const text = output.join('\n');
+    expect(text).toContain('node-pty:');
+    expect(text).toContain('pending resumes: 1');
+    expect(text).toContain('stale instance dirs: 0');
+    expect(text).toContain('last rotation: none');
+    expect(text).toContain('resume 019e365c-a287-74a3-890e-5b23a633f3c1 cwd=C:/workspace/project');
+  });
+
+  it('surfaces unexpected doctor instance path errors', async () => {
+    const program = createCliProgram({
+      paths: {
+        root: tmpDir,
+        accounts: accountsPath,
+        state: statePath,
+        health: healthPath,
+        rotationLog: rotationLogPath,
+        instances: instancesPath,
+        codexHome: codexHomePath
+      },
+      output: () => undefined,
+      env: { PATH: '' }
+    });
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(instancesPath, 'not-a-directory', 'utf8');
+
+    await expect(program.parseAsync(['node', 'codex-relay', 'doctor'])).rejects.toMatchObject({
+      code: 'ENOTDIR'
+    });
+  });
+
+  it('surfaces unexpected doctor rotation log read errors', async () => {
+    const program = createCliProgram({
+      paths: {
+        root: tmpDir,
+        accounts: accountsPath,
+        state: statePath,
+        health: healthPath,
+        rotationLog: rotationLogPath,
+        instances: instancesPath,
+        codexHome: codexHomePath
+      },
+      output: () => undefined,
+      env: { PATH: '' }
+    });
+    await mkdir(rotationLogPath, { recursive: true });
+
+    await expect(program.parseAsync(['node', 'codex-relay', 'doctor'])).rejects.toMatchObject({
+      code: 'EISDIR'
+    });
+  });
+
+  it('clears pending resumes and leases with reset', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: (text) => output.push(text)
+    });
+    await saveStateFile(statePath, {
+      version: 1,
+      currentIndex: 0,
+      leases: {
+        owner: {
+          accountName: 'relay-a',
+          ownerId: 'owner',
+          pid: 123,
+          startedAt: '2026-05-23T00:00:00.000Z',
+          updatedAt: '2026-05-23T00:00:00.000Z',
+          expiresAt: '2099-01-01T00:00:00.000Z'
+        }
+      },
+      pendingResumes: {
+        'c:/workspace/project': {
+          sessionId: '019e365c-a287-74a3-890e-5b23a633f3c1',
+          prompt: 'Continue',
+          cwd: 'C:/workspace/project',
+          updatedAt: '2026-05-23T00:00:00.000Z'
+        }
+      },
+      updatedAt: '2026-05-23T00:00:00.000Z'
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'reset', '--resume', '--leases']);
+
+    const state = await loadStateFile(statePath);
+    expect(state.pendingResumes).toBeUndefined();
+    expect(state.leases).toEqual({});
+    expect(output).toContain('Cleared pending resume sessions.');
+    expect(output).toContain('Cleared active account leases.');
+  });
+
+  it('requires an explicit reset target', async () => {
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: () => undefined
+    });
+
+    await expect(program.parseAsync(['node', 'codex-relay', 'reset'])).rejects.toThrow(
+      /choose what to reset/i
+    );
   });
 
   it('imports accounts from a json file', async () => {
@@ -530,9 +758,24 @@ describe('cli', () => {
       await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
       await program.parseAsync(['node', 'codex-relay', 'test', 'relay-a']);
 
-      expect(output.join('\n')).toContain('relay-a UNKNOWN');
+      expect(output.join('\n')).toContain('relay-a UNKNOWN probe-only');
     }
   );
+
+  it('prints failed test status for non-standard relay responses', async () => {
+    const output: string[] = [];
+    const fetch = vi.fn(async () => new Response('', { status: 418 }));
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: (text) => output.push(text),
+      fetch
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
+    await program.parseAsync(['node', 'codex-relay', 'test', 'relay-a']);
+
+    expect(output.join('\n')).toContain('relay-a FAILED');
+  });
 
   it('throws when testing a missing account', async () => {
     const program = createCliProgram({
@@ -565,6 +808,29 @@ describe('cli', () => {
         codexArgs: ['hello']
       }),
       expect.objectContaining({ paths: { accounts: accountsPath, state: statePath } })
+    );
+  });
+
+  it('passes no-resume to the managed runner', async () => {
+    const runManagedCodex = vi.fn(async () => ({
+      exitCode: 0,
+      signal: null,
+      usedAccount: 'relay-a'
+    }));
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath },
+      output: () => undefined,
+      runManagedCodex
+    });
+
+    await program.parseAsync(['node', 'codex-relay', '--no-resume', 'hello']);
+
+    expect(runManagedCodex).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codexArgs: ['hello'],
+        disableResume: true
+      }),
+      expect.anything()
     );
   });
 

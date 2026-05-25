@@ -201,6 +201,16 @@ describe('account store', () => {
     expect(file.preferred).toBe('relay-b');
   });
 
+  it('rejects selecting a missing preferred account', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://relay-a.example.com/v1'
+    });
+
+    await expect(setPreferredAccount(accountsPath, 'missing')).rejects.toThrow(/does not exist/i);
+  });
+
   it('imports accounts from a top-level json array', async () => {
     const importPath = join(tmpDir, 'data.json');
     await mkdir(tmpDir, { recursive: true });
@@ -359,6 +369,74 @@ describe('account store', () => {
     const file = await loadAccountsFile(accountsPath);
 
     expect(file.accounts.map((account) => account.name)).toEqual(['relay-a', 'relay-a-2']);
+  });
+
+  it('repairs duplicate stored names without colliding with existing suffixes', async () => {
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      accountsPath,
+      JSON.stringify({
+        version: 1,
+        customQuotaPatterns: [],
+        accounts: [
+          {
+            name: 'relay-a',
+            apiKey: 'sk-a',
+            baseUrl: 'https://a.example.com/v1',
+            addedAt: '2026-05-18T00:00:00.000Z'
+          },
+          {
+            name: 'relay-a-2',
+            apiKey: 'sk-b',
+            baseUrl: 'https://b.example.com/v1',
+            addedAt: '2026-05-18T00:00:00.000Z'
+          },
+          {
+            name: 'relay-a',
+            apiKey: 'sk-c',
+            baseUrl: 'https://c.example.com/v1',
+            addedAt: '2026-05-18T00:00:00.000Z'
+          }
+        ]
+      }),
+      'utf8'
+    );
+
+    const file = await loadAccountsFile(accountsPath);
+
+    expect(file.accounts.map((account) => account.name)).toEqual(['relay-a', 'relay-a-2', 'relay-a-3']);
+  });
+
+  it('repairs duplicate stored credentials automatically', async () => {
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      accountsPath,
+      JSON.stringify({
+        version: 1,
+        customQuotaPatterns: [],
+        accounts: [
+          {
+            name: 'relay-a',
+            apiKey: 'sk-same',
+            baseUrl: 'https://same.example.com/v1',
+            model: 'gpt-5.1-codex',
+            addedAt: '2026-05-18T00:00:00.000Z'
+          },
+          {
+            name: 'relay-b',
+            apiKey: 'sk-same',
+            baseUrl: 'https://same.example.com/v1',
+            model: 'gpt-5.1-codex',
+            addedAt: '2026-05-18T00:00:00.000Z'
+          }
+        ]
+      }),
+      'utf8'
+    );
+
+    const file = await loadAccountsFile(accountsPath);
+
+    expect(file.accounts.map((account) => account.name)).toEqual(['relay-a']);
   });
 
   it('rejects malformed stored accounts json', async () => {

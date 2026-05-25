@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { access } from 'node:fs/promises';
+import { access, readdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -15,15 +15,19 @@ import {
 import { loadHealthFile } from './core/health.js';
 import { loadStateFile, pruneExpiredLeases, saveStateFile } from './core/state.js';
 import { withStoreLock } from './core/store-lock.js';
-import { runManagedCodex as defaultRunManagedCodex } from './core/runner.js';
+import {
+  resolveCodexSpawnTarget,
+  runManagedCodex as defaultRunManagedCodex
+} from './core/runner.js';
 import { resolveDataPaths, type DataPaths } from './utils/paths.js';
 import type { AccountHealth, RunnerOptions, SpawnResult } from './types.js';
 
 export interface CliDependencies {
-  paths?: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health' | 'lock'>>;
+  paths?: Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'root' | 'health' | 'lock' | 'codexHome' | 'instances' | 'rotationLog'>>;
   output?: (text: string) => void;
   error?: (text: string) => void;
   fetch?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
   runManagedCodex?: (
     options: RunnerOptions,
     dependencies: Parameters<typeof defaultRunManagedCodex>[1]
@@ -36,6 +40,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   const rawOutput = dependencies.output ?? ((text: string) => process.stdout.write(text));
   const error = dependencies.error ?? ((text: string) => console.error(text));
   const fetchImpl = dependencies.fetch ?? fetch;
+  const env = dependencies.env ?? process.env;
   const runManagedCodex = dependencies.runManagedCodex ?? defaultRunManagedCodex;
   const program = new Command();
 
@@ -46,6 +51,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .version(getPackageVersion(), '-v, --version', 'Display codex-relay version / 显示 codex-relay 版本')
     .helpOption('-h, --help', 'Display help for command / 显示帮助信息')
     .option('--account <name>', 'Use a specific relay account for this run / 本次运行指定账号')
+    .option('--no-resume', 'Do not auto-resume an interrupted session / 本次启动不自动恢复中断会话')
     .allowUnknownOption(true)
     .allowExcessArguments(true)
     .exitOverride()
@@ -150,7 +156,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       }
       for (const account of accounts) {
         const status = await testRelayAccount(account, fetchImpl);
-        output(`${account.name} ${status}`);
+        output(`${account.name} ${formatRelayTestStatus(status)}`);
       }
     });
 
@@ -175,11 +181,53 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       }
     });
 
+  program
+    .command('doctor')
+    .description('Run local diagnostics / 本地环境诊断')
+    .action(async () => {
+      const report = await buildDoctorReport(paths, env);
+      for (const line of report) {
+        output(line);
+      }
+    });
+
+  program
+    .command('reset')
+    .description('Clear local runtime state / 清理本地运行状态')
+    .option('--resume', 'Clear pending resume sessions / 清理待恢复会话')
+    .option('--leases', 'Clear active account leases / 清理账号租约')
+    .action(async (options: { resume?: boolean; leases?: boolean }) => {
+      if (!options.resume && !options.leases) {
+        throw new Error('Choose what to reset: --resume and/or --leases.');
+      }
+      await withStoreLock(paths, async () => {
+        const state = await loadStateFile(paths.state);
+        const nextState = {
+          ...state,
+          updatedAt: new Date().toISOString()
+        };
+        if (options.resume) {
+          delete nextState.pendingResumes;
+        }
+        if (options.leases) {
+          nextState.leases = {};
+        }
+        await saveStateFile(paths.state, nextState);
+      });
+      if (options.resume) {
+        output('Cleared pending resume sessions.');
+      }
+      if (options.leases) {
+        output('Cleared active account leases.');
+      }
+    });
+
   program.action(async () => {
-    const options = program.opts<{ account?: string }>();
+    const options = program.opts<{ account?: string; resume?: boolean }>();
     await autoSetupFromDefaultFile(paths, output);
     const runnerOptions: RunnerOptions = {
-      codexArgs: program.args
+      codexArgs: program.args,
+      disableResume: options.resume === false
     };
     if (options.account) {
       runnerOptions.accountName = options.account;
@@ -365,7 +413,108 @@ function countActiveLeases(state: Awaited<ReturnType<typeof loadStateFile>>, acc
   ).length;
 }
 
+async function buildDoctorReport(paths: CliDependencies['paths'] extends undefined ? DataPaths : NonNullable<CliDependencies['paths']>, env: NodeJS.ProcessEnv): Promise<string[]> {
+  const fullPaths = resolveDoctorPaths(paths);
+  const accountsFile = await loadAccountsFile(fullPaths.accounts);
+  const state = await loadFreshState(fullPaths.state);
+  const health = await loadHealthFile(fullPaths.health);
+  const codexTarget = resolveCodexSpawnTarget(env);
+  const nodePtyStatus = resolveNodePtyStatus();
+  const instanceCount = await countDirectories(fullPaths.instances);
+  const lastRotation = await readLastLine(fullPaths.rotationLog);
+  const activeLeases = Object.values(state.leases).filter((lease) => new Date(lease.expiresAt).getTime() > Date.now());
+  const cooldownCount = accountsFile.accounts.filter((account) => health.accounts[account.name]?.status === 'cooldown').length;
+  const pendingResumes = collectPendingResumeEntries(state);
+  const lines = [
+    'codex-relay doctor',
+    `codex-relay: ${getPackageVersion()}`,
+    `node: ${process.version}`,
+    `node-pty: ${nodePtyStatus}`,
+    `codex command: ${formatCodexTarget(codexTarget)}`,
+    `relay home: ${fullPaths.root}`,
+    `codex home: ${fullPaths.codexHome}`,
+    `accounts: ${accountsFile.accounts.length} total, ${accountsFile.accounts.length - cooldownCount} active, ${cooldownCount} cooldown, ${health.retired.length} retired`,
+    `preferred: ${accountsFile.preferred ?? 'none'}`,
+    `last successful: ${state.lastSuccessfulAccount ?? 'none'}`,
+    `pending resumes: ${pendingResumes.length}`,
+    `active leases: ${activeLeases.length}`,
+    `stale instance dirs: ${instanceCount}`,
+    `last rotation: ${lastRotation ?? 'none'}`
+  ];
+  for (const pending of pendingResumes) {
+    lines.push(`  resume ${pending.sessionId} cwd=${pending.cwd ?? 'unknown'} updated=${pending.updatedAt}`);
+  }
+  for (const lease of activeLeases) {
+    lines.push(`  lease ${lease.accountName} pid=${lease.pid} cwd=${lease.cwd ?? 'unknown'} expires=${lease.expiresAt}`);
+  }
+  lines.push('network probe: skipped; run `codex-relay test` for lightweight /models checks.');
+  return lines;
+}
+
+function resolveDoctorPaths(paths: NonNullable<CliDependencies['paths']>): DataPaths {
+  const base = resolveDataPaths();
+  return {
+    root: paths.root ?? dirname(paths.state),
+    accounts: paths.accounts,
+    state: paths.state,
+    health: paths.health ?? join(dirname(paths.state), 'health.json'),
+    rotationLog: paths.rotationLog ?? join(dirname(paths.state), 'rotation.log'),
+    lock: paths.lock ?? join(dirname(paths.state), 'store.lock'),
+    codexHome: paths.codexHome ?? base.codexHome,
+    instances: paths.instances ?? join(dirname(paths.state), 'instances')
+  };
+}
+
+function resolveNodePtyStatus(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    require('node-pty');
+    return 'ok';
+  } catch {
+    return 'missing';
+  }
+}
+
+function formatCodexTarget(target: ReturnType<typeof resolveCodexSpawnTarget>): string {
+  const args = target.argsPrefix.length > 0 ? ` ${target.argsPrefix.join(' ')}` : '';
+  return `${target.command}${args}`;
+}
+
+function collectPendingResumeEntries(state: Awaited<ReturnType<typeof loadStateFile>>) {
+  return Object.values(state.pendingResumes ?? {});
+}
+
+async function countDirectories(dirPath: string): Promise<number> {
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).length;
+  } catch (error) {
+    if (isMissingFile(error)) {
+      return 0;
+    }
+    throw error;
+  }
+}
+
+async function readLastLine(filePath: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    return raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
+  } catch (error) {
+    if (isMissingFile(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 type RelayTestStatus = 'OK' | 'UNKNOWN' | 'FAILED';
+
+function formatRelayTestStatus(status: RelayTestStatus): string {
+  return status === 'UNKNOWN'
+    ? 'UNKNOWN probe-only'
+    : status;
+}
 
 async function testRelayAccount(account: Pick<AccountInput, 'apiKey' | 'baseUrl'>, fetchImpl: typeof fetch): Promise<RelayTestStatus> {
   const endpoint = `${account.baseUrl.replace(/\/+$/, '')}/models`;
@@ -395,4 +544,8 @@ function isCommanderDisplayExit(error: unknown): boolean {
     error !== null &&
     'code' in error &&
     ['commander.helpDisplayed', 'commander.version'].includes(String(error.code));
+}
+
+function isMissingFile(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }

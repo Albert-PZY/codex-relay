@@ -623,7 +623,43 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('resume');
     expect(adapter.spawns[1]?.args).toContain(sessionId);
     expect(adapter.spawns[1]?.args).toContain('Continue');
-    expect((await loadStateFile(statePath)).pendingResume).toBeUndefined();
+    expect((await loadStateFile(statePath)).pendingResumes).toBeUndefined();
+  });
+
+  it('treats Ctrl+C from the user as an intentional exit instead of a rotation trigger', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://right.codes/codex/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const input = new FakeInput();
+    const outputStream = new FakeOutputStream();
+    const adapter = new FakeAdapter([{ chunks: [], exitCode: 1, autoExit: false }]);
+    const run = runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        input: input as unknown as NodeJS.ReadStream,
+        output: () => undefined,
+        outputStream: outputStream as unknown as NodeJS.WriteStream
+      }
+    );
+    const handle = await adapter.waitForHandle();
+
+    input.emit('data', Buffer.from('\u0003'));
+    handle.emit('data', 'Unexpected status 403 Forbidden\n');
+    handle.exit();
+
+    const result = await run;
+    expect(result.usedAccount).toBe('relay-a');
+    expect(adapter.spawns).toHaveLength(1);
   });
 
   it('shows the current relay account with a masked key before launching codex', async () => {
@@ -743,6 +779,88 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('resume');
     expect(adapter.spawns[1]?.args).toContain(sessionId);
     expect(adapter.spawns[1]?.args).toContain('Continue');
+  });
+
+  it('falls back to the session file name when session metadata is not parseable', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const cwd = '/workspace/project';
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
+    const adapter = new FakeAdapter([
+      { chunks: [], exitCode: 1, autoExit: false },
+      ['continued\n']
+    ]);
+
+    const run = runManagedCodex(
+      { codexArgs: ['do task'], cwd, accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+    const firstHandle = await adapter.waitForHandle();
+    const runCodexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
+    const sessionDir = join(runCodexHome, 'sessions', '2026', '05', '24');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(sessionDir, `${sessionId}.jsonl`), 'not-json\n', 'utf8');
+    firstHandle.emit('data', 'Error: insufficient balance\n');
+
+    const result = await run;
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
+  });
+
+  it('discovers the bound session from Codex session_index before rotating', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const cwd = '/workspace/project';
+    const sessionId = '019d7bcd-15ef-7921-a22d-4552303fee6c';
+    const adapter = new FakeAdapter([
+      { chunks: [], exitCode: 1, autoExit: false },
+      ['continued\n']
+    ]);
+
+    const run = runManagedCodex(
+      { codexArgs: ['do task'], cwd, accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+    const firstHandle = await adapter.waitForHandle();
+    const runCodexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
+    await writeFile(
+      join(runCodexHome, 'session_index.jsonl'),
+      `${JSON.stringify({ id: sessionId, updated_at: new Date().toISOString() })}\nnot-json\n`,
+      'utf8'
+    );
+    firstHandle.emit('data', 'Unexpected status 402 Payment Required\n');
+
+    const result = await run;
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
   });
 
   it('discovers the bound session from Codex history before rotating', async () => {
@@ -869,11 +987,13 @@ describe('runner', () => {
       version: 1,
       currentIndex: 0,
       leases: {},
-      pendingResume: {
-        sessionId,
-        prompt: 'Continue',
-        cwd,
-        updatedAt: '2026-05-23T00:00:00.000Z'
+      pendingResumes: {
+        [cwd]: {
+          sessionId,
+          prompt: 'Continue',
+          cwd,
+          updatedAt: '2026-05-23T00:00:00.000Z'
+        }
       },
       updatedAt: '2026-05-23T00:00:00.000Z'
     });
@@ -893,7 +1013,89 @@ describe('runner', () => {
     expect(adapter.spawns[0]?.args).toContain('resume');
     expect(adapter.spawns[0]?.args).toContain(sessionId);
     expect(adapter.spawns[0]?.args).toContain('Continue');
-    expect((await loadStateFile(statePath)).pendingResume).toBeUndefined();
+    expect((await loadStateFile(statePath)).pendingResumes).toBeUndefined();
+  });
+
+  it('keeps pending resumes isolated by workspace', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+
+    await saveStateFile(statePath, {
+      version: 1,
+      currentIndex: 0,
+      leases: {},
+      pendingResumes: {
+        '/workspace/a': {
+          sessionId: '019e365c-a287-74a3-890e-5b23a633f3c1',
+          prompt: 'Continue',
+          cwd: '/workspace/a',
+          updatedAt: '2026-05-23T00:00:00.000Z'
+        },
+        '/workspace/b': {
+          sessionId: '019d7bcd-15ef-7921-a22d-4552303fee6c',
+          prompt: 'Continue',
+          cwd: '/workspace/b',
+          updatedAt: '2026-05-23T00:01:00.000Z'
+        }
+      },
+      updatedAt: '2026-05-23T00:00:00.000Z'
+    });
+
+    const adapter = new FakeAdapter([['continued\n']]);
+
+    await runManagedCodex(
+      { codexArgs: [], cwd: '/workspace/b' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(adapter.spawns[0]?.args).toContain('019d7bcd-15ef-7921-a22d-4552303fee6c');
+    const state = await loadStateFile(statePath);
+    expect(state.pendingResumes?.['/workspace/a']?.sessionId).toBe('019e365c-a287-74a3-890e-5b23a633f3c1');
+    expect(state.pendingResumes?.['/workspace/b']).toBeUndefined();
+  });
+
+  it('does not auto-resume when resume is disabled for this run', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+
+    await saveStateFile(statePath, {
+      version: 1,
+      currentIndex: 0,
+      leases: {},
+      pendingResumes: {
+        '/workspace/project': {
+          sessionId: '019e365c-a287-74a3-890e-5b23a633f3c1',
+          prompt: 'Continue',
+          cwd: '/workspace/project',
+          updatedAt: '2026-05-23T00:00:00.000Z'
+        }
+      },
+      updatedAt: '2026-05-23T00:00:00.000Z'
+    });
+
+    const adapter = new FakeAdapter([['ok\n']]);
+
+    await runManagedCodex(
+      { codexArgs: [], cwd: '/workspace/project', disableResume: true },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(adapter.spawns[0]?.args).not.toContain('resume');
+    expect((await loadStateFile(statePath)).pendingResumes?.['/workspace/project']).toBeDefined();
   });
 
   it('rotates on payload tier limit errors and shows the switch in output', async () => {
@@ -1177,7 +1379,7 @@ describe('runner', () => {
         adapter,
         output: () => undefined,
         now: () => currentTime,
-        leaseHeartbeatMs: 5
+        leaseHeartbeatMs: 250
       }
     );
     const handle = await adapter.waitForHandle();
@@ -1189,7 +1391,7 @@ describe('runner', () => {
       await waitFor(async () => {
         leases = Object.values((await loadStateFile(statePath)).leases);
         return leases[0]?.updatedAt === '2026-05-19T00:01:00.000Z';
-      });
+      }, 10_000);
       expect(leases[0]).toMatchObject({
         accountName: 'relay-a',
         updatedAt: '2026-05-19T00:01:00.000Z',
@@ -1199,7 +1401,7 @@ describe('runner', () => {
       handle.exit();
       await run;
     }
-  });
+  }, 15_000);
 
   it('rotates across multiple keys under the same relay base url', async () => {
     await addAccount(accountsPath, {

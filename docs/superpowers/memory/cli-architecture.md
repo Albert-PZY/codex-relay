@@ -33,7 +33,10 @@ status: active
 - `src/core/runner.ts` runs each managed attempt inside a temporary Codex home overlay and writes account-specific `auth.json` plus active provider `base_url` there before each child process.
 - `src/core/runner.ts` resolves the Codex executable from `CODEX_RELAY_CODEX_PATH` first, then from `PATH`.
 - `list` shows active account leases as `in-use` so concurrent terminal allocation is visible.
-- `test` is a lightweight `/models` diagnostic; rotation decisions are based on actual Codex output.
+- `test` is a lightweight `/models` diagnostic; inconclusive checks print `UNKNOWN probe-only`, and rotation decisions are based on actual Codex output.
+- `doctor` reports local paths, Codex command resolution, `node-pty` availability, account counts, active leases, pending resumes, stale instance directories, and the last rotation log line.
+- `reset --resume` clears pending resumes. `reset --leases` clears local account leases.
+- `--no-resume` skips pending-resume loading for the current run and leaves existing pending resume state intact.
 - The runner persists interrupted sessions only after it has discovered a concrete session id, and it resumes only that explicit session instead of guessing `--last`.
 
 ## Invariants
@@ -43,6 +46,8 @@ status: active
 - Keep account secrets outside the repository and under the user's home data directory.
 - Serialize shared account, health, and lease store updates through the local store lock.
 - Prefer unleased accounts for concurrent terminals and share only when the pool is tight.
+- Scope pending resume lookup and cleanup to the current working directory.
+- Treat user exit input such as `Ctrl+C` or `Ctrl+D` as intentional exit, not as a rotation trigger.
 - Prefer exact session resume over "latest session" guessing.
 - If no concrete session id can be discovered, stop rotation instead of guessing another conversation.
 
@@ -53,6 +58,6 @@ status: active
 
 ## Common Pitfalls
 
-- PTY support can fail on some Windows machines if native dependencies are unavailable; runtime falls back to a normal child process.
+- PTY support can fail on some Windows machines if native dependencies are unavailable; interactive TUI mode requires `node-pty`, while non-interactive `exec` can still use a normal child process.
 - Quota detection must be conservative to avoid interrupting valid conversations.
-- Relays that do not implement `/models` can still work for real conversations; `UNKNOWN` from `test` is not an unusable-account verdict.
+- Relays that do not implement `/models` can still work for real conversations; `UNKNOWN probe-only` from `test` is not an unusable-account verdict.
