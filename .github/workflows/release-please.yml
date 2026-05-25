@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           MAJOR_VERSION="${PACKAGE_VERSION%%.*}"
-          MINOR_VERSION="$(node -e "const [major, minor] = process.argv[1].split('.'); console.log(`${major}.${minor}`)" "$PACKAGE_VERSION")"
+          MINOR_VERSION="$(node -p "const [major, minor] = process.argv[1].split('.'); major + '.' + minor" "$PACKAGE_VERSION")"
           TARGET_SHA="${{ steps.release.outputs.sha }}"
 
           git config user.name "github-actions[bot]"
