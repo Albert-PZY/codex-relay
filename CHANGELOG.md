@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/Albert-PZY/codex-relay/compare/v0.6.10...v0.7.0) (2026-05-25)
+
+
+### Features
+
+* add diagnostics and workspace resume controls ([46aa1f3](https://github.com/Albert-PZY/codex-relay/commit/46aa1f3a0d6d273d6e5801faabf2e4f96d525c14))
+
 ## [0.6.10](https://github.com/Albert-PZY/codex-relay/compare/v0.6.9...v0.6.10) (2026-05-25)
 
 
