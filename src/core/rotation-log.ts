@@ -10,14 +10,14 @@ export interface RotationLogEntry {
   to?: string;
   reason: HealthFailureReason;
   resumeMode: 'session';
+  sessionId: string;
 }
 
 export async function appendRotationLog(filePath: string, entry: RotationLogEntry): Promise<void> {
   const cutoffMs = entry.at.getTime() - KEEP_FOR_MS;
   const existing = await readRotationLog(filePath);
   const kept = existing.filter((line) => {
-    const timestamp = line.slice(0, line.indexOf(' '));
-    const parsed = Date.parse(timestamp);
+    const parsed = parseRotationLogTimestamp(line);
     return Number.isFinite(parsed) && parsed >= cutoffMs;
   });
   kept.push(formatRotationLogEntry(entry));
@@ -37,8 +37,31 @@ async function readRotationLog(filePath: string): Promise<string[]> {
 }
 
 function formatRotationLogEntry(entry: RotationLogEntry): string {
-  const target = entry.to ?? 'none';
-  return `${entry.at.toISOString()} ${entry.from} -> ${target} reason=${entry.reason} resume=${entry.resumeMode}`;
+  return JSON.stringify({
+    timestamp: entry.at.toISOString(),
+    event: 'account_rotation',
+    sessionId: entry.sessionId,
+    fromAccount: entry.from,
+    toAccount: entry.to ?? null,
+    reason: entry.reason,
+    resumeMode: entry.resumeMode
+  });
+}
+
+function parseRotationLogTimestamp(line: string): number {
+  try {
+    const parsed = JSON.parse(line) as { timestamp?: unknown; at?: unknown };
+    const timestamp = typeof parsed.timestamp === 'string'
+      ? parsed.timestamp
+      : typeof parsed.at === 'string'
+        ? parsed.at
+        : undefined;
+    return timestamp ? Date.parse(timestamp) : Number.NaN;
+  } catch {
+    const timestampEnd = line.indexOf(' ');
+    const timestamp = timestampEnd === -1 ? line : line.slice(0, timestampEnd);
+    return Date.parse(timestamp);
+  }
 }
 
 function isMissingFile(error: unknown): boolean {

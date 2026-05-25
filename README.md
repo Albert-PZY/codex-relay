@@ -5,7 +5,7 @@
 ## 安装
 
 ```bash
-npm install -g codex-relay-cli
+pnpm add -g codex-relay-cli
 ```
 
 运行环境：
@@ -87,7 +87,7 @@ codex-relay "帮我完成当前项目"
 - `accounts.json`：账号池
 - `state.json`：默认账号、最近成功账号和多终端租约
 - `health.json`：冷却、失败原因和退役记录
-- `rotation.log`：最近 7 天的切号记录
+- `rotation.log`：最近 7 天的切号记录，JSONL 格式，每行包含 `timestamp`、`event`、`sessionId`、`fromAccount`、`toAccount`、`reason` 和 `resumeMode`
 - `store.lock`：本机并发写入锁
 
 Codex 配置以官方 Codex Home 作为源目录。默认路径是 `~/.codex/`，如果当前环境设置了 `CODEX_HOME`，则沿用 `CODEX_HOME` 指向的目录。

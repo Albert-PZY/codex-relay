@@ -94,7 +94,7 @@ https://www.npmjs.com/package/codex-relay-cli
 用户之后就可以安装：
 
 ```bash
-npm install -g codex-relay-cli
+pnpm add -g codex-relay-cli
 ```
 
 ## 常见问题

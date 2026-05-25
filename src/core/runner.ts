@@ -429,6 +429,7 @@ export async function runManagedCodex(
         requestedAccount: options.accountName,
         cwd: effectiveCwd,
         result,
+        sessionId,
         now
       });
       output(formatRotationNotice(account.name, reserved?.account.name, result.reason ?? 'unknown'));
@@ -475,6 +476,7 @@ interface FailureReserveInput extends ReserveNextInput {
   failedAccount: RelayAccount;
   result: RunAttemptResult;
   rotationLogPath: string;
+  sessionId: string;
 }
 
 async function reserveNextAccount(input: ReserveNextInput): Promise<ReservedAccount | undefined> {
@@ -567,7 +569,8 @@ async function recordFailedAttemptAndReserveNext(input: FailureReserveInput): Pr
         from: input.failedAccount.name,
         to: reserved.account.name,
         reason: input.result.reason ?? 'unknown',
-        resumeMode: 'session'
+        resumeMode: 'session',
+        sessionId: input.sessionId
       });
     }
     return reserved;
