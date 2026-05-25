@@ -21,7 +21,7 @@ status: active
 ## Runtime Anchors
 
 - Account-pool data lives under `~/.codex-relay` unless `CODEX_RELAY_HOME` is set.
-- Managed runs reuse the official Codex home: `CODEX_HOME` first, otherwise `~/.codex`.
+- Managed runs create a temporary Codex home overlay from the official Codex home: `CODEX_HOME` first, otherwise `~/.codex`.
 - JSON import accepts only a top-level array of flat account objects.
 - Rotation health, cooldown, leases, and 10-day retirement are persistent local state.
 - Release automation is driven by Conventional Commits and Release Please.

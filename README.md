@@ -90,9 +90,9 @@ codex-relay "帮我完成当前项目"
 - `rotation.log`：最近 7 天的切号记录
 - `store.lock`：本机并发写入锁
 
-Codex 配置复用官方 Codex Home。默认路径是 `~/.codex/`，如果当前环境设置了 `CODEX_HOME`，则沿用 `CODEX_HOME` 指向的目录。
+Codex 配置以官方 Codex Home 作为源目录。默认路径是 `~/.codex/`，如果当前环境设置了 `CODEX_HOME`，则沿用 `CODEX_HOME` 指向的目录。
 
-每次启动或恢复 Codex 前，工具会写入当前号池账号：
+每次启动或恢复 Codex 时，工具会在 `~/.codex-relay/instances/<run-id>` 创建临时 Codex Home，链接官方 Codex 的历史和会话数据，只在这个临时实例里写入当前号池账号：
 
 - `auth.json` 里的 `OPENAI_API_KEY`
 - `config.toml` 中当前 `model_provider` 对应 `[model_providers.<provider>]` 的 `base_url`
@@ -115,7 +115,7 @@ Codex 配置复用官方 Codex Home。默认路径是 `~/.codex/`，如果当前
 - 终端正常退出会释放租约；异常退出时租约会自动过期
 - 需要隔离号池时，为该终端设置 `CODEX_RELAY_HOME`
 
-所有运行实例默认复用同一个 Codex Home，因此官方 Codex 的登录状态、配置和会话历史保持一致。
+所有运行实例默认读取同一个官方 Codex Home 的历史和会话数据；账号 key 和 base URL 写入各自的临时实例，多个终端之间不会互相覆盖配置。
 
 ## 自动切号
 
@@ -125,7 +125,7 @@ Codex 配置复用官方 Codex Home。默认路径是 `~/.codex/`，如果当前
 
 如果本机曾经写入过重复账号或坏掉的旧状态，`codex-relay` 会在下次读取时自动修复它们，不需要手工改 JSON。
 
-能识别 Codex 会话 id 时，恢复命令使用 `codex resume <session-id> Continue`；识别不到时使用 `codex resume --last Continue`。
+能识别 Codex 会话 id 时，恢复命令使用 `codex resume <session-id> Continue`；识别不到时会停止自动切换，不再猜测上一条会话。
 
 ## 开发
 

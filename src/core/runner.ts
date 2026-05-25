@@ -2,9 +2,9 @@ import { EventEmitter } from 'node:events';
 import { spawn as spawnChild } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { mkdir, readFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, open, readFile, readdir, rm, stat, symlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { loadAccountsFile, saveAccountsFile } from './accounts.js';
 import { detectOutput, extractSessionId } from './detector.js';
 import {
@@ -62,7 +62,7 @@ export interface RunnerDependencies {
   leaseHeartbeatMs?: number;
 }
 
-type RunnerDataPaths = Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health' | 'codexHome' | 'lock' | 'rotationLog'>>;
+type RunnerDataPaths = Pick<DataPaths, 'accounts' | 'state'> & Partial<Pick<DataPaths, 'health' | 'codexHome' | 'instances' | 'lock' | 'rotationLog'>>;
 
 interface RunAttemptResult {
   exitCode: number | null;
@@ -75,6 +75,15 @@ interface RunAttemptResult {
 
 type NodePtyModule = typeof import('node-pty');
 type NodePtyLoader = () => NodePtyModule;
+type SessionCandidate = {
+  id: string;
+  cwd: string | null;
+  timestampMs: number;
+};
+type ResumeRequest = {
+  sessionId: string;
+  prompt: string;
+};
 const nonInteractiveSubcommands = new Set([
   'exec',
   'e',
@@ -117,6 +126,10 @@ const ACCOUNT_LEASE_TTL_MS = 2 * 60 * 1000;
 const ACCOUNT_LEASE_HEARTBEAT_MS = 30 * 1000;
 const OUTPUT_DETECTION_BUFFER_LIMIT = 8192;
 const ROTATION_EXIT_FALLBACK_MS = 250;
+const HIGH_CONFIDENCE_GRACEFUL_ROTATION_MS = 800;
+const SESSION_DISCOVERY_POLL_INTERVAL_MS = 50;
+const SESSION_DISCOVERY_TIMEOUT_MS = 1_000;
+const SESSION_HISTORY_TAIL_BYTES = 64 * 1024;
 
 export function resolveCodexSpawnTarget(
   env: NodeJS.ProcessEnv = process.env,
@@ -218,7 +231,7 @@ export function buildCodexEnv(
 export function buildCodexArgs(
   account: RelayAccount,
   codexArgs: string[],
-  resume?: { sessionId?: string; prompt: string }
+  resume?: ResumeRequest
 ): string[] {
   const args: string[] = [];
   if (account.model) {
@@ -233,11 +246,7 @@ export function buildCodexArgs(
       args.push('--no-alt-screen');
     }
     args.push('resume');
-    if (resume.sessionId) {
-      args.push(resume.sessionId);
-    } else {
-      args.push('--last');
-    }
+    args.push(resume.sessionId);
     args.push(resume.prompt);
     return args;
   }
@@ -303,12 +312,12 @@ export async function runManagedCodex(
   const healthPath = resolveHealthPath(paths);
   const rotationLogPath = resolveRotationLogPath(paths);
   const ownerId = createLeaseOwnerId();
-  const codexHome = resolveCodexHomePath(paths);
+  const runId = buildRunId();
+  const sourceCodexHome = resolveCodexHomePath(paths);
+  const instanceDir = resolveInstanceCodexHome(paths, runId);
   const effectiveCwd = options.cwd ?? process.cwd();
-  await mkdir(codexHome, { recursive: true });
   const pendingResume = await loadPendingResumeForCwd(paths, effectiveCwd, options.codexArgs);
   let sessionId = pendingResume?.sessionId;
-  let hasInterruptedSession = pendingResume !== undefined;
   const resumePrompt = pendingResume?.prompt ?? 'Continue';
   const attempted = new Set<string>();
   let reserved = await reserveNextAccount({
@@ -321,6 +330,7 @@ export async function runManagedCodex(
     now
   });
   const stopHeartbeat = startLeaseHeartbeat(paths, ownerId, now, leaseHeartbeatMs);
+  let overlayPrepared = false;
 
   try {
     while (reserved) {
@@ -336,23 +346,46 @@ export async function runManagedCodex(
         codexArgs: options.codexArgs,
         cwd: effectiveCwd,
         env,
-        codexHome,
+        codexHome: instanceDir,
         input,
         output,
         outputStream,
         customQuotaPatterns: reserved.accountsFile.customQuotaPatterns
       };
-      if (hasInterruptedSession) {
-        attemptArgs.resume = sessionId ? { sessionId, prompt: resumePrompt } : { prompt: resumePrompt };
+      if (sessionId) {
+        attemptArgs.resume = { sessionId, prompt: resumePrompt };
       }
 
-      await withStoreLock(paths, async () => {
-        await prepareCodexHomeForAccount(codexHome, account);
-      });
+      if (!overlayPrepared) {
+        await prepareRunScopedCodexHome(instanceDir, sourceCodexHome, account);
+        overlayPrepared = true;
+      } else {
+        await writeRunScopedAccountFiles(instanceDir, account);
+      }
       output(formatAccountNotice(account, attemptArgs.resume !== undefined));
+
+      let knownSessionIds = new Map<string, number>();
+      let launchStartedAt = 0;
+      if (!sessionId) {
+        knownSessionIds = await snapshotKnownSessionIds(instanceDir);
+        launchStartedAt = Date.now();
+      }
+
       const result = await runAttempt(attemptArgs);
 
       sessionId = result.sessionId ?? sessionId;
+      if (!sessionId) {
+        const discoveredSessionId = await waitForSessionId({
+          instanceDir,
+          workspaceDir: effectiveCwd,
+          launchStartedAt,
+          knownSessionIds,
+          timeoutMs: result.shouldRotate ? SESSION_DISCOVERY_TIMEOUT_MS : 0
+        });
+        if (discoveredSessionId) {
+          sessionId = discoveredSessionId;
+        }
+      }
 
       if (!result.shouldRotate) {
         await recordSuccessfulAttempt(paths, healthPath, account.name, now(), true);
@@ -368,9 +401,19 @@ export async function runManagedCodex(
         return success;
       }
 
-      hasInterruptedSession = true;
+      if (!sessionId) {
+        await recordFailedAttempt(paths, healthPath, account, result, now);
+        restoreTerminal(outputStream);
+        output('\n[codex-relay] Unable to safely resume: no session id was captured for this run. Automatic rotation stopped instead of guessing another conversation.\n');
+        return {
+          exitCode: result.exitCode && result.exitCode !== 0 ? result.exitCode : 1,
+          signal: result.signal,
+          usedAccount: account.name
+        };
+      }
+
       await savePendingResume(paths, {
-        ...(sessionId ? { sessionId } : {}),
+        sessionId,
         prompt: resumePrompt,
         cwd: effectiveCwd,
         updatedAt: now().toISOString()
@@ -395,6 +438,7 @@ export async function runManagedCodex(
   } finally {
     await stopHeartbeat();
     await releaseAccountLease(paths, ownerId);
+    await rm(instanceDir, { recursive: true, force: true });
   }
 }
 
@@ -503,12 +547,26 @@ async function recordFailedAttemptAndReserveNext(input: FailureReserveInput): Pr
 
     const reserved = await reserveNextAccountLocked(input);
     if (reserved) {
+      const nextIndex = getAccountIndex(reserved.accountsFile, reserved.account.name);
+      const state = await loadStateFile(input.paths.state);
+      if (reserved.accountsFile.preferred === input.failedAccount.name) {
+        await saveAccountsFile(input.paths.accounts, {
+          ...reserved.accountsFile,
+          preferred: reserved.account.name
+        });
+      }
+      await saveStateFile(input.paths.state, {
+        ...state,
+        currentIndex: Math.max(0, nextIndex),
+        lastSuccessfulAccount: reserved.account.name,
+        updatedAt: failureAt.toISOString()
+      });
       await appendRotationLog(input.rotationLogPath, {
         at: failureAt,
         from: input.failedAccount.name,
         to: reserved.account.name,
         reason: input.result.reason ?? 'unknown',
-        resumeMode: input.result.sessionId ? 'session' : 'last'
+        resumeMode: 'session'
       });
     }
     return reserved;
@@ -578,10 +636,365 @@ function isSameCwd(left: string, right: string): boolean {
     : left === right;
 }
 
-async function prepareCodexHomeForAccount(codexHome: string, account: RelayAccount): Promise<void> {
-  await mkdir(codexHome, { recursive: true });
-  await writeCodexAuth(join(codexHome, 'auth.json'), account.apiKey);
-  await writeCodexConfig(join(codexHome, 'config.toml'), account.baseUrl);
+function resolveInstancesRoot(paths: Pick<DataPaths, 'state'> & Partial<Pick<DataPaths, 'instances'>>): string {
+  return paths.instances ?? join(dirname(paths.state), 'instances');
+}
+
+function resolveInstanceCodexHome(paths: Pick<DataPaths, 'state'> & Partial<Pick<DataPaths, 'instances'>>, runId: string): string {
+  return join(resolveInstancesRoot(paths), runId);
+}
+
+async function prepareRunScopedCodexHome(
+  instanceDir: string,
+  sourceCodexHome: string,
+  account: RelayAccount
+): Promise<void> {
+  await mkdir(sourceCodexHome, { recursive: true });
+  await ensureSourceCodexHomeLayout(sourceCodexHome);
+  await rm(instanceDir, { recursive: true, force: true });
+  await mkdir(instanceDir, { recursive: true });
+
+  const entries = await readdir(sourceCodexHome, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === 'auth.json' || entry.name === 'config.toml' || entry.name === 'models_cache.json') {
+      continue;
+    }
+
+    const target = join(sourceCodexHome, entry.name);
+    const link = join(instanceDir, entry.name);
+    await createOverlayEntry(target, link, entry.isDirectory());
+  }
+
+  await copyOptionalFile(join(sourceCodexHome, 'config.toml'), join(instanceDir, 'config.toml'));
+  await writeCodexAuth(join(instanceDir, 'auth.json'), account.apiKey);
+  await writeCodexConfig(join(instanceDir, 'config.toml'), account.baseUrl);
+}
+
+async function ensureSourceCodexHomeLayout(sourceCodexHome: string): Promise<void> {
+  const persistentFiles = ['history.jsonl', 'session_index.jsonl'];
+  for (const fileName of persistentFiles) {
+    const filePath = join(sourceCodexHome, fileName);
+    try {
+      await stat(filePath);
+    } catch (error) {
+      if (!isMissingFile(error)) {
+        throw error;
+      }
+      await writeTextAtomic(filePath, '');
+    }
+  }
+
+  await mkdir(join(sourceCodexHome, 'sessions'), { recursive: true });
+}
+
+async function copyOptionalFile(sourcePath: string, targetPath: string): Promise<void> {
+  try {
+    await copyFile(sourcePath, targetPath);
+  } catch (error) {
+    if (!isMissingFile(error)) {
+      throw error;
+    }
+  }
+}
+
+async function createOverlayEntry(sourcePath: string, targetPath: string, isDirectory: boolean): Promise<void> {
+  if (isDirectory) {
+    await symlink(sourcePath, targetPath, process.platform === 'win32' ? 'junction' : 'dir');
+    return;
+  }
+
+  try {
+    await link(sourcePath, targetPath);
+    return;
+  } catch {
+    try {
+      await symlink(sourcePath, targetPath, 'file');
+      return;
+    } catch {
+      await copyFile(sourcePath, targetPath);
+    }
+  }
+}
+
+async function writeRunScopedAccountFiles(instanceDir: string, account: RelayAccount): Promise<void> {
+  await writeCodexAuth(join(instanceDir, 'auth.json'), account.apiKey);
+  await writeCodexConfig(join(instanceDir, 'config.toml'), account.baseUrl);
+}
+
+async function recordFailedAttempt(
+  paths: RunnerDataPaths,
+  healthPath: string,
+  account: RelayAccount,
+  result: RunAttemptResult,
+  now: () => Date
+): Promise<void> {
+  await withStoreLock(paths, async () => {
+    await recordAccountFailure(healthPath, {
+      accountName: account.name,
+      baseUrl: account.baseUrl,
+      reason: result.reason ?? 'unknown',
+      now: now(),
+      ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {})
+    });
+  });
+}
+
+function buildRunId(): string {
+  return `${Date.now()}-${process.pid}-${randomUUID()}`;
+}
+
+async function snapshotKnownSessionIds(instanceDir: string): Promise<Map<string, number>> {
+  const candidates = await readSessionCandidates(instanceDir);
+  return new Map(candidates.map((candidate) => [candidate.id, candidate.timestampMs]));
+}
+
+async function waitForSessionId(options: {
+  instanceDir: string;
+  workspaceDir: string;
+  launchStartedAt: number;
+  knownSessionIds: Map<string, number>;
+  timeoutMs: number;
+}): Promise<string | undefined> {
+  const deadline = Date.now() + Math.max(0, options.timeoutMs);
+
+  while (true) {
+    const candidates = await readSessionCandidates(options.instanceDir);
+    const discovered = selectBestSessionCandidate(
+      candidates.filter((candidate) => isNewOrUpdatedSessionCandidate(candidate, options.knownSessionIds)),
+      options.workspaceDir,
+      options.launchStartedAt
+    );
+    if (discovered) {
+      return discovered;
+    }
+
+    if (Date.now() >= deadline) {
+      return undefined;
+    }
+    await sleep(SESSION_DISCOVERY_POLL_INTERVAL_MS);
+  }
+}
+
+function isNewOrUpdatedSessionCandidate(candidate: SessionCandidate, knownSessionIds: Map<string, number>): boolean {
+  const knownTimestampMs = knownSessionIds.get(candidate.id);
+  return knownTimestampMs === undefined || candidate.timestampMs > knownTimestampMs;
+}
+
+async function readSessionCandidates(instanceDir: string): Promise<SessionCandidate[]> {
+  const [fromFiles, fromIndex, fromHistory] = await Promise.all([
+    readSessionCandidatesFromFiles(instanceDir),
+    readSessionCandidatesFromIndex(instanceDir),
+    readSessionCandidatesFromHistory(instanceDir)
+  ]);
+  return mergeSessionCandidates([...fromFiles, ...fromIndex, ...fromHistory]);
+}
+
+async function readSessionCandidatesFromFiles(instanceDir: string): Promise<SessionCandidate[]> {
+  const sessionFiles = await collectSessionFiles(join(instanceDir, 'sessions'));
+  const candidates: SessionCandidate[] = [];
+
+  for (const sessionFile of sessionFiles) {
+    const candidate = await readSessionCandidateFromFile(sessionFile);
+    if (candidate) {
+      candidates.push(candidate);
+    }
+  }
+  return candidates;
+}
+
+async function readSessionCandidateFromFile(sessionFile: string): Promise<SessionCandidate | undefined> {
+  let mtimeMs = 0;
+  try {
+    mtimeMs = (await stat(sessionFile)).mtimeMs;
+  } catch {
+    return undefined;
+  }
+
+  const fileText = await readTextIfExists(sessionFile);
+  const firstLine = fileText?.split(/\r?\n/).find((line) => line.trim().length > 0);
+  if (firstLine) {
+    try {
+      const parsed = JSON.parse(firstLine) as {
+        type?: unknown;
+        payload?: { id?: unknown; cwd?: unknown; timestamp?: unknown };
+      };
+      if (parsed.type === 'session_meta' && typeof parsed.payload?.id === 'string') {
+        return {
+          id: parsed.payload.id,
+          cwd: typeof parsed.payload.cwd === 'string' ? parsed.payload.cwd : null,
+          timestampMs: parseDateMs(parsed.payload.timestamp) ?? mtimeMs
+        };
+      }
+    } catch {
+      // Fall back to filename extraction below.
+    }
+  }
+
+  const idFromName = extractSessionIdFromFileName(sessionFile);
+  return idFromName ? { id: idFromName, cwd: null, timestampMs: mtimeMs } : undefined;
+}
+
+async function readSessionCandidatesFromIndex(instanceDir: string): Promise<SessionCandidate[]> {
+  const indexText = await readTextIfExists(join(instanceDir, 'session_index.jsonl'));
+  if (!indexText) {
+    return [];
+  }
+
+  const candidates: SessionCandidate[] = [];
+  for (const line of indexText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
+    try {
+      const parsed = JSON.parse(line) as { id?: unknown; updated_at?: unknown };
+      const timestampMs = parseDateMs(parsed.updated_at);
+      if (typeof parsed.id === 'string' && timestampMs !== null) {
+        candidates.push({ id: parsed.id, cwd: null, timestampMs });
+      }
+    } catch {
+      continue;
+    }
+  }
+  return candidates;
+}
+
+async function readSessionCandidatesFromHistory(instanceDir: string): Promise<SessionCandidate[]> {
+  const historyText = await readTailTextIfExists(join(instanceDir, 'history.jsonl'), SESSION_HISTORY_TAIL_BYTES);
+  if (!historyText) {
+    return [];
+  }
+
+  const candidates: SessionCandidate[] = [];
+  for (const line of historyText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
+    try {
+      const parsed = JSON.parse(line) as {
+        session_id?: unknown;
+        ts?: unknown;
+        cwd?: unknown;
+      };
+      if (typeof parsed.session_id === 'string') {
+        candidates.push({
+          id: parsed.session_id,
+          cwd: typeof parsed.cwd === 'string' ? parsed.cwd : null,
+          timestampMs: parseTimestampMs(parsed.ts) ?? 0
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+  return candidates;
+}
+
+async function collectSessionFiles(root: string): Promise<string[]> {
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    const nested = await Promise.all(entries.map(async (entry) => {
+      const entryPath = join(root, entry.name);
+      if (entry.isDirectory()) {
+        return collectSessionFiles(entryPath);
+      }
+      return entry.isFile() && entry.name.endsWith('.jsonl') ? [entryPath] : [];
+    }));
+    return nested.flat();
+  } catch {
+    return [];
+  }
+}
+
+function selectBestSessionCandidate(
+  candidates: SessionCandidate[],
+  workspaceDir: string,
+  launchStartedAt: number
+): string | undefined {
+  const freshCandidates = candidates.filter((candidate) => candidate.timestampMs >= launchStartedAt - 60_000);
+  const cwdMatched = freshCandidates.filter((candidate) => candidate.cwd === null || isSameCwd(candidate.cwd, workspaceDir));
+  const ranked = (cwdMatched.length > 0 ? cwdMatched : freshCandidates).sort((left, right) => {
+    const leftDelta = Math.abs(left.timestampMs - launchStartedAt);
+    const rightDelta = Math.abs(right.timestampMs - launchStartedAt);
+    if (leftDelta !== rightDelta) {
+      return leftDelta - rightDelta;
+    }
+    return right.timestampMs - left.timestampMs;
+  });
+  return ranked[0]?.id;
+}
+
+function mergeSessionCandidates(candidates: SessionCandidate[]): SessionCandidate[] {
+  const merged = new Map<string, SessionCandidate>();
+  for (const candidate of candidates) {
+    const existing = merged.get(candidate.id);
+    if (!existing || candidate.timestampMs > existing.timestampMs) {
+      merged.set(candidate.id, {
+        id: candidate.id,
+        cwd: candidate.cwd ?? existing?.cwd ?? null,
+        timestampMs: candidate.timestampMs
+      });
+    }
+  }
+  return [...merged.values()];
+}
+
+function parseDateMs(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseTimestampMs(value: unknown): number | null {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    return value > 1e12 ? value : value * 1000;
+  }
+  return parseDateMs(value);
+}
+
+function extractSessionIdFromFileName(filePath: string): string | undefined {
+  return basename(filePath).match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i)?.[1];
+}
+
+async function readTextIfExists(filePath: string): Promise<string | undefined> {
+  try {
+    return await readFile(filePath, 'utf8');
+  } catch (error) {
+    if (isMissingFile(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function readTailTextIfExists(filePath: string, maxBytes: number): Promise<string | undefined> {
+  try {
+    const handle = await open(filePath, 'r');
+    try {
+      const { size } = await handle.stat();
+      const length = Math.min(size, maxBytes);
+      if (length <= 0) {
+        return '';
+      }
+
+      const buffer = Buffer.alloc(length);
+      const position = Math.max(0, size - length);
+      const { bytesRead } = await handle.read(buffer, 0, length, position);
+      return buffer.toString('utf8', 0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (isMissingFile(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function writeCodexAuth(filePath: string, apiKey: string): Promise<void> {
@@ -820,7 +1233,7 @@ interface RunAttemptArgs {
   output: (chunk: string) => void;
   outputStream: NodeJS.WriteStream;
   customQuotaPatterns: string[];
-  resume?: { sessionId?: string; prompt: string };
+  resume?: ResumeRequest;
 }
 
 async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
@@ -837,6 +1250,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
     let reason: HealthFailureReason | undefined;
     let outputDetectionBuffer = '';
     let rotationFallback: NodeJS.Timeout | undefined;
+    let gracefulRotationTimer: NodeJS.Timeout | undefined;
     const terminalSize = getTerminalSize(args.outputStream);
     const spawnOptions: SpawnOptions = {
       env: buildCodexEnv(args.account, args.env, args.codexHome),
@@ -865,6 +1279,10 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
         clearTimeout(rotationFallback);
         rotationFallback = undefined;
       }
+      if (gracefulRotationTimer) {
+        clearTimeout(gracefulRotationTimer);
+        gracefulRotationTimer = undefined;
+      }
       args.input.off('data', forwardInput);
       args.outputStream.off('resize', forwardResize);
       restoreInputMode?.();
@@ -888,11 +1306,17 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       reason = match.reason ?? reason;
       if (match.confidence === 'high') {
         shouldRotate = true;
-        handle.kill();
+        if (!gracefulRotationTimer) {
+          gracefulRotationTimer = setTimeout(() => {
+            gracefulRotationTimer = undefined;
+            handle.kill();
+          }, HIGH_CONFIDENCE_GRACEFUL_ROTATION_MS);
+        }
         if (!rotationFallback) {
           rotationFallback = setTimeout(() => {
+            handle.kill();
             finish({ exitCode: 1, signal: null });
-          }, ROTATION_EXIT_FALLBACK_MS);
+          }, HIGH_CONFIDENCE_GRACEFUL_ROTATION_MS + ROTATION_EXIT_FALLBACK_MS);
         }
       } else if (match.confidence === 'medium') {
         mediumSignalSeen = true;
@@ -910,7 +1334,7 @@ function appendDetectionBuffer(current: string, chunk: string): string {
     : next.slice(next.length - OUTPUT_DETECTION_BUFFER_LIMIT);
 }
 
-function isInteractiveTuiAttempt(codexArgs: string[], resume?: { sessionId?: string; prompt: string }): boolean {
+function isInteractiveTuiAttempt(codexArgs: string[], resume?: ResumeRequest): boolean {
   if (resume) {
     return !isExecCodexInvocation(codexArgs);
   }

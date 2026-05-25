@@ -16,6 +16,7 @@ export interface DataPaths {
   rotationLog: string;
   lock: string;
   codexHome: string;
+  instances: string;
 }
 
 export function resolveDataPaths(env: PathEnv = process.env): DataPaths {
@@ -32,6 +33,7 @@ export function resolveDataPaths(env: PathEnv = process.env): DataPaths {
     health: join(root, 'health.json'),
     rotationLog: join(root, 'rotation.log'),
     lock: join(root, 'store.lock'),
-    codexHome
+    codexHome,
+    instances: join(root, 'instances')
   };
 }

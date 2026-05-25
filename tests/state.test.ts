@@ -70,6 +70,28 @@ describe('state store', () => {
     });
   });
 
+  it('repairs pending resume metadata without an explicit session id', async () => {
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        currentIndex: 0,
+        pendingResume: {
+          prompt: 'Continue',
+          cwd: 'C:/workspace/project',
+          updatedAt: '2026-05-23T00:00:00.000Z'
+        },
+        leases: {},
+        updatedAt: '2026-05-23T00:00:00.000Z'
+      }),
+      'utf8'
+    );
+
+    const saved = await loadStateFile(statePath);
+    expect(saved.pendingResume).toBeUndefined();
+  });
+
   it('saves a state file with a generated timestamp when updatedAt is empty', async () => {
     const state = await loadStateFile(statePath);
     state.updatedAt = '';

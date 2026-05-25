@@ -62,7 +62,7 @@ export interface StateFile {
 }
 
 export interface PendingResume {
-  sessionId?: string;
+  sessionId: string;
   prompt: string;
   cwd?: string;
   updatedAt: string;

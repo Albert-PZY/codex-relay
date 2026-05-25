@@ -9,9 +9,9 @@ Build a lightweight Node.js CLI that manages multiple relay API keys/base URLs f
 
 ## Architecture
 
-The package exposes a global `codex-relay` binary. Management commands read and write `~/.codex-relay/accounts.json`, `~/.codex-relay/state.json`, and `~/.codex-relay/health.json`. Managed Codex runs launch the official `codex` executable as a child process, reuse the configured Codex home, and update `auth.json.OPENAI_API_KEY` plus the active model provider `base_url` before each attempt. The configured Codex home is `CODEX_HOME` when set, otherwise the user's `~/.codex`.
+The package exposes a global `codex-relay` binary. Management commands read and write `~/.codex-relay/accounts.json`, `~/.codex-relay/state.json`, and `~/.codex-relay/health.json`. Managed Codex runs launch the official `codex` executable as a child process. Each managed run creates a temporary Codex home overlay under `~/.codex-relay/instances/<run-id>`, links durable Codex history/session data from the configured Codex home, and writes per-account `auth.json.OPENAI_API_KEY` plus the active model provider `base_url` before each attempt. The configured Codex home is `CODEX_HOME` when set, otherwise the user's `~/.codex`.
 
-The runner keeps output passthrough simple. It watches child output with a conservative detector. High-confidence quota or unusable-environment messages trigger immediate rotation. Medium-confidence messages rotate only when the child exits unsuccessfully. After rotation, the runner restarts Codex with `resume <session-id> Continue` when it can identify a session id, otherwise it falls back to `resume --last Continue` only when explicit session discovery is unavailable.
+The runner keeps output passthrough simple. It watches child output with a conservative detector. High-confidence quota or unusable-environment messages trigger immediate rotation. Medium-confidence messages rotate only when the child exits unsuccessfully. After rotation, the runner restarts Codex with `resume <session-id> Continue` only when it can identify a concrete session id from buffered output or Codex session files; otherwise it stops instead of guessing another conversation.
 
 ## CLI Surface
 
