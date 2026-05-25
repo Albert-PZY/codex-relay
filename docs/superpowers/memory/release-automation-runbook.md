@@ -71,9 +71,45 @@ After a release, verify:
 npm view codex-relay-cli name version dist-tags bin --registry=https://registry.npmjs.org
 gh release list --limit 5
 git ls-remote --tags origin
-npm install -g codex-relay-cli@latest --registry=https://registry.npmjs.org
+pnpm add -g codex-relay-cli@latest --registry=https://registry.npmjs.org
 codex-relay --help
 ```
+
+## Windows pnpm Global Shim SOP
+
+On this machine, `pnpm add -g codex-relay-cli@<version> --global-dir "G:\develop\nvm\nodejs" --config.global-bin-dir="G:\develop\nvm\nodejs"` can download the package but fail while refreshing the root `codex-relay` shims with `ENOENT`. When that happens:
+
+1. Confirm the published version:
+
+```powershell
+npm view codex-relay-cli version --registry=https://registry.npmjs.org
+```
+
+2. Locate the downloaded package in pnpm store:
+
+```powershell
+Get-ChildItem -Force "G:\develop\pnpm\store\v11\links\@\codex-relay-cli\<version>" -Directory
+```
+
+3. Verify `<hash>\node_modules\codex-relay-cli\dist\index.js` exists.
+
+4. Rewrite `G:\develop\nvm\nodejs\codex-relay`, `codex-relay.CMD`, and `codex-relay.ps1` to call that absolute `dist\index.js` and prepend these `NODE_PATH` entries:
+
+```text
+<hash>\node_modules\codex-relay-cli\node_modules
+<hash>\node_modules
+G:\develop\nvm\nodejs\v11\<latest-global-dir>\node_modules\.pnpm\node_modules
+```
+
+5. Verify:
+
+```powershell
+codex-relay --version
+codex-relay --help
+codex-relay list
+```
+
+Do not kill unrelated `node.exe`, Codex, MCP, or dev-server processes while repairing the shim. Only touch the `codex-relay*` shim files and the matching codex-relay-cli global package path.
 
 ## Known Failure Modes
 

@@ -100,7 +100,7 @@ sequenceDiagram
 - `accounts.json`：`version`、`preferred`、`customQuotaPatterns`、`accounts`
 - `state.json`：`currentIndex`、`lastSuccessfulAccount`、`leases`、`updatedAt`
 - `health.json`：`accounts`、`retired`、`updatedAt`
-- `rotation.log`：最近 7 天切号记录，每行包含时间、来源账号、目标账号、失败原因和恢复方式
+- `rotation.log`：最近 7 天切号记录，JSONL 格式，每行包含 `timestamp`、`event`、`sessionId`、`fromAccount`、`toAccount`、`reason` 和 `resumeMode`
 - `store.lock`：本机多终端共享写入锁
 
 官方 Codex Home 默认是 `~/.codex/`，如果设置了 `CODEX_HOME`，则沿用该路径作为源目录。`codex-relay` 每次运行在 `~/.codex-relay/instances/<run-id>` 创建临时 Codex Home overlay，链接源目录里的历史和会话数据，只在临时实例中写入当前账号必需的两项：

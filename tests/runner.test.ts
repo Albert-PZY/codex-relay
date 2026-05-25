@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,11 +17,20 @@ import {
 } from '../src/core/runner.js';
 import type { RelayAccount } from '../src/types.js';
 
-const tmpDir = fileURLToPath(new URL('./tmp-runner/', import.meta.url));
-const accountsPath = join(tmpDir, 'accounts.json');
-const statePath = join(tmpDir, 'state.json');
-const healthPath = join(tmpDir, 'health.json');
-const rotationLogPath = join(tmpDir, 'rotation.log');
+const tmpRoot = fileURLToPath(new URL('./tmp-runner/', import.meta.url));
+let tmpDir = '';
+let accountsPath = '';
+let statePath = '';
+let healthPath = '';
+let rotationLogPath = '';
+
+beforeEach(() => {
+  tmpDir = join(tmpRoot, randomTestDirName());
+  accountsPath = join(tmpDir, 'accounts.json');
+  statePath = join(tmpDir, 'state.json');
+  healthPath = join(tmpDir, 'health.json');
+  rotationLogPath = join(tmpDir, 'rotation.log');
+});
 
 afterEach(async () => {
   await rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
@@ -518,9 +527,14 @@ describe('runner', () => {
     expect(output.join('')).toContain('[codex-relay] relay-a failed (auth); switching to relay-b');
 
     const log = await readFile(rotationLogPath, 'utf8');
-    expect(log).toContain('relay-a -> relay-b');
-    expect(log).toContain('reason=auth');
-    expect(log).toContain('resume=session');
+    const rotation = JSON.parse(log.trim()) as { fromAccount: string; toAccount: string; reason: string; resumeMode: string; sessionId: string };
+    expect(rotation).toMatchObject({
+      fromAccount: 'relay-a',
+      toAccount: 'relay-b',
+      reason: 'auth',
+      resumeMode: 'session',
+      sessionId
+    });
 
     const state = await loadStateFile(statePath);
     expect(state.currentIndex).toBe(1);
@@ -953,9 +967,15 @@ describe('runner', () => {
     );
 
     const log = await readFile(rotationLogPath, 'utf8');
-    expect(log).toContain('relay-a -> relay-b');
-    expect(log).toContain('reason=auth');
-    expect(log).toContain('resume=session');
+    expect(JSON.parse(log.trim())).toMatchObject({
+      timestamp: '2026-05-21T00:00:00.000Z',
+      event: 'account_rotation',
+      fromAccount: 'relay-a',
+      toAccount: 'relay-b',
+      reason: 'auth',
+      resumeMode: 'session',
+      sessionId
+    });
   });
 
   it('creates a run-scoped codex home from the configured source home before launching codex', async () => {
@@ -1397,8 +1417,13 @@ describe('runner', () => {
     expect(result.usedAccount).toBe('relay-c');
     expect(adapter.spawns.map((spawn) => spawn.env.OPENAI_API_KEY)).toEqual(['sk-a', 'sk-c']);
     const log = await readFile(rotationLogPath, 'utf8');
-    expect(log).toContain('relay-a -> relay-c');
-    expect(log).not.toContain('relay-a -> relay-b');
+    expect(JSON.parse(log.trim())).toMatchObject({
+      fromAccount: 'relay-a',
+      toAccount: 'relay-c',
+      reason: 'auth',
+      resumeMode: 'session',
+      sessionId
+    });
   });
 
   it('marks a successful account as active in health state', async () => {
@@ -1754,6 +1779,10 @@ class FakeOutputStream extends EventEmitter {
     this.writes.push(chunk);
     return true;
   }
+}
+
+function randomTestDirName(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 1000): Promise<void> {
