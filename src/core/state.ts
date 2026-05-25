@@ -22,7 +22,7 @@ const stateFileSchema = z.object({
 }).strict();
 
 const pendingResumeSchema = z.object({
-  sessionId: z.string().trim().min(1).optional(),
+  sessionId: z.string().trim().min(1),
   prompt: z.string().trim().min(1),
   cwd: z.string().trim().min(1).optional(),
   updatedAt: z.string().datetime()
@@ -131,12 +131,10 @@ type ParsedPendingResume = z.infer<typeof pendingResumeSchema>;
 
 function normalizePendingResume(pendingResume: ParsedPendingResume): PendingResume {
   const normalized: PendingResume = {
+    sessionId: pendingResume.sessionId,
     prompt: pendingResume.prompt,
     updatedAt: pendingResume.updatedAt
   };
-  if (pendingResume.sessionId) {
-    normalized.sessionId = pendingResume.sessionId;
-  }
   if (pendingResume.cwd) {
     normalized.cwd = pendingResume.cwd;
   }

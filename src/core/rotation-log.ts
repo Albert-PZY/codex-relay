@@ -9,7 +9,7 @@ export interface RotationLogEntry {
   from: string;
   to?: string;
   reason: HealthFailureReason;
-  resumeMode: 'session' | 'last';
+  resumeMode: 'session';
 }
 
 export async function appendRotationLog(filePath: string, entry: RotationLogEntry): Promise<void> {

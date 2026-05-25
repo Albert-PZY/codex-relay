@@ -1,6 +1,6 @@
 # codex-relay 架构说明
 
-`codex-relay` 是官方 Codex CLI 的轻量外壳。它管理中转站号池，把当前选中的账号写入官方 Codex 配置，然后启动官方 `codex` 命令。项目自身只维护号池、健康状态和并发租约，不实现模型调用客户端。
+`codex-relay` 是官方 Codex CLI 的轻量外壳。它管理中转站号池，为每次运行创建临时 Codex Home overlay，把当前选中的账号写入该运行实例，然后启动官方 `codex` 命令。项目自身只维护号池、健康状态和并发租约，不实现模型调用客户端。
 
 ## 技术栈
 
@@ -18,9 +18,10 @@
 - 账号管理：`add`、`list`、`use`、`remove`
 - JSON 导入：`setup`、`import` 和首次运行自动读取顶层数组 JSON
 - 自动去重：重复账号名、重复 `baseUrl + apiKey + model` 自动跳过
-- Codex 配置注入：启动前写入 `auth.json.OPENAI_API_KEY` 和当前 provider 的 `base_url`
+- 运行级 overlay：每次运行复用官方 Codex 历史和会话文件，只在临时实例中写入账号配置
+- Codex 配置注入：启动前写入本次运行的 `auth.json.OPENAI_API_KEY` 和当前 provider 的 `base_url`
 - 自动切号：额度、鉴权、限流、上游异常和中转站异常会触发账号切换
-- 上下文恢复：优先使用明确的会话 id，兜底使用 `resume --last Continue`
+- 上下文恢复：只使用明确的会话 id，来自 Codex 输出或会话文件；识别不到就停止切换
 - 健康状态：失败账号冷却，连续 10 天未恢复的账号进入退役记录
 - 多终端协调：本机锁和短时租约避免多个项目同时抢同一个账号
 - 轻量预检：`test` 只检查 `/models`，真实切号以实际 Codex 对话输出为准
@@ -60,7 +61,7 @@ flowchart LR
   CLI --> Runner[src/core/runner.ts<br>配置注入<br>启动 Codex<br>自动恢复]
   Runner --> Detector[src/core/detector.ts<br>错误信号识别]
   Runner --> Rotator[src/core/rotator.ts<br>账号排序<br>可用性过滤]
-  Runner --> CodexHome[(Codex Home<br>auth.json<br>config.toml)]
+  Runner --> CodexHome[(运行级 Codex Home overlay<br>auth.json<br>config.toml)]
   Runner --> Codex[官方 Codex CLI]
   Accounts --> AccountsFile[(~/.codex-relay/accounts.json)]
   State --> StateFile[(~/.codex-relay/state.json)]
@@ -75,20 +76,21 @@ sequenceDiagram
   participant User as 用户
   participant CLI as codex-relay
   participant Pool as ~/.codex-relay
-  participant Home as Codex Home
+  participant Home as Codex Home overlay
   participant Codex as 官方 Codex CLI
   User->>CLI: codex-relay "任务"
   CLI->>Pool: 号池为空时读取 data.json
   CLI->>Pool: 选择未冷却且未被占用的账号
   CLI->>Pool: 写入当前终端租约
-  CLI->>Home: 写入 OPENAI_API_KEY<br>写入当前 provider base_url
+  CLI->>Home: 创建运行级 overlay<br>写入 OPENAI_API_KEY<br>写入当前 provider base_url
   CLI->>Codex: 启动官方 codex
   Codex-->>CLI: 输出内容或错误信号
   CLI->>Pool: 成功则记录账号可用
   CLI->>Pool: 失败则记录冷却状态
   CLI->>Pool: 写入切号日志
   CLI->>Home: 写入下一个账号
-  CLI->>Codex: resume Continue
+  CLI->>Home: 发现明确 session id
+  CLI->>Codex: resume session-id Continue
 ```
 
 ## 本地数据约定
@@ -101,7 +103,7 @@ sequenceDiagram
 - `rotation.log`：最近 7 天切号记录，每行包含时间、来源账号、目标账号、失败原因和恢复方式
 - `store.lock`：本机多终端共享写入锁
 
-官方 Codex Home 默认是 `~/.codex/`，如果设置了 `CODEX_HOME`，则沿用该路径。`codex-relay` 只写入当前账号必需的两项：
+官方 Codex Home 默认是 `~/.codex/`，如果设置了 `CODEX_HOME`，则沿用该路径作为源目录。`codex-relay` 每次运行在 `~/.codex-relay/instances/<run-id>` 创建临时 Codex Home overlay，链接源目录里的历史和会话数据，只在临时实例中写入当前账号必需的两项：
 
 - `auth.json.OPENAI_API_KEY`
 - `config.toml` 当前 `model_provider` 对应的 `[model_providers.<provider>].base_url`

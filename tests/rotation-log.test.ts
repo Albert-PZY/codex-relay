@@ -31,7 +31,7 @@ describe('rotation log', () => {
       from: 'relay-old',
       to: 'relay-b',
       reason: 'quota',
-      resumeMode: 'last'
+      resumeMode: 'session'
     });
 
     await appendRotationLog(logPath, {
@@ -39,7 +39,7 @@ describe('rotation log', () => {
       from: 'relay-a',
       to: 'relay-b',
       reason: 'quota',
-      resumeMode: 'last'
+      resumeMode: 'session'
     });
 
     await appendRotationLog(logPath, {
@@ -47,7 +47,7 @@ describe('rotation log', () => {
       from: 'relay-c',
       to: 'relay-d',
       reason: 'server',
-      resumeMode: 'last'
+      resumeMode: 'session'
     });
 
     const log = await readFile(logPath, 'utf8');

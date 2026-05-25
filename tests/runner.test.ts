@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addAccount } from '../src/core/accounts.js';
+import { addAccount, loadAccountsFile, setPreferredAccount } from '../src/core/accounts.js';
 import { loadHealthFile, recordAccountFailure } from '../src/core/health.js';
 import { loadStateFile, saveStateFile } from '../src/core/state.js';
 import {
@@ -84,6 +84,17 @@ describe('runner', () => {
       '123e4567-e89b-12d3-a456-426614174000',
       'Continue'
     ]);
+  });
+
+  it('always binds resume args to an explicit session id', () => {
+    const args = buildCodexArgs(account, ['hello'], {
+      sessionId: '019e365c-a287-74a3-890e-5b23a633f3c1',
+      prompt: 'Continue'
+    });
+
+    expect(args).toContain('resume');
+    expect(args).toContain('019e365c-a287-74a3-890e-5b23a633f3c1');
+    expect(args).not.toContain('--last');
   });
 
   it('does not duplicate no-alt-screen when the user already passed it', () => {
@@ -431,6 +442,7 @@ describe('runner', () => {
       apiKey: 'sk-b',
       baseUrl: 'https://b.example.com/v1'
     });
+    await setPreferredAccount(accountsPath, 'relay-a');
 
     const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
     const output: string[] = [];
@@ -468,6 +480,11 @@ describe('runner', () => {
     expect(log).toContain('relay-a -> relay-b');
     expect(log).toContain('reason=auth');
     expect(log).toContain('resume=session');
+
+    const state = await loadStateFile(statePath);
+    expect(state.currentIndex).toBe(1);
+    expect(state.lastSuccessfulAccount).toBe('relay-b');
+    expect((await loadAccountsFile(accountsPath)).preferred).toBe('relay-b');
   });
 
   it('continues rotation even when the killed TUI does not emit an exit event', async () => {
@@ -490,6 +507,7 @@ describe('runner', () => {
           'Unexpected status 403 Forbidden: {"error":"API Key 已被禁用"}\n'
         ],
         exitCode: 1,
+        autoExit: false,
         emitExitOnKill: false
       },
       ['continued\n']
@@ -514,7 +532,7 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain(sessionId);
   });
 
-  it('rotates on conversation interruption text and falls back to the latest session when needed', async () => {
+  it('rotates on conversation interruption text only when a session id is bound', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -529,9 +547,9 @@ describe('runner', () => {
     const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
     const adapter = new FakeAdapter([
       [
+        `Context 4% used  ${sessionId}\n`,
         `Conversation interrupted - tell the model what to do differently.\n`,
-        `Unexpected status 403 Forbidden: {"error":"API Key 已被禁用"}\n`,
-        `Context 4% used  ${sessionId}\n`
+        `Unexpected status 403 Forbidden: {"error":"API Key 已被禁用"}\n`
       ],
       ['continued\n']
     ]);
@@ -548,7 +566,7 @@ describe('runner', () => {
     expect(result.usedAccount).toBe('relay-b');
     expect(adapter.spawns).toHaveLength(2);
     expect(adapter.spawns[1]?.args).toContain('resume');
-    expect(adapter.spawns[1]?.args).toContain('--last');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
     expect(adapter.spawns[1]?.args).toContain('Continue');
     expect((await loadStateFile(statePath)).pendingResume).toBeUndefined();
   });
@@ -581,7 +599,7 @@ describe('runner', () => {
     expect(text).not.toContain('sk-1234567890abcdef');
   });
 
-  it('falls back to resume --last when no session id is detected', async () => {
+  it('stops rotation when no bound session id can be detected', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -598,17 +616,188 @@ describe('runner', () => {
       ['continued\n']
     ]);
 
-    await runManagedCodex(
+    const output: string[] = [];
+    const result = await runManagedCodex(
       { codexArgs: ['do task'], accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, health: healthPath },
+        adapter,
+        output: (chunk) => output.push(chunk)
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-a');
+    expect(result.exitCode).toBe(1);
+    expect(adapter.spawns).toHaveLength(1);
+    expect(output.join('')).toContain('Unable to safely resume');
+    const health = await loadHealthFile(healthPath);
+    expect(health.accounts['relay-a']).toMatchObject({
+      status: 'cooldown',
+      reason: 'quota'
+    });
+  });
+
+  it('discovers the bound session from Codex session files before rotating', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const cwd = '/workspace/project';
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
+    const adapter = new FakeAdapter([
+      { chunks: [], exitCode: 1, autoExit: false },
+      ['continued\n']
+    ]);
+
+    const run = runManagedCodex(
+      { codexArgs: ['do task'], cwd, accountName: 'relay-a' },
       {
         paths: { accounts: accountsPath, state: statePath },
         adapter,
         output: () => undefined
       }
     );
+    const firstHandle = await adapter.waitForHandle();
+    const runCodexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
+    const sessionDir = join(runCodexHome, 'sessions', '2026', '05', '24');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, `${sessionId}.jsonl`),
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: sessionId,
+          cwd,
+          timestamp: new Date().toISOString()
+        }
+      })}\n`,
+      'utf8'
+    );
+    firstHandle.emit('data', 'Error: insufficient balance\n');
 
+    const result = await run;
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
     expect(adapter.spawns[1]?.args).toContain('resume');
-    expect(adapter.spawns[1]?.args).toContain('--last');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
+    expect(adapter.spawns[1]?.args).toContain('Continue');
+  });
+
+  it('discovers the bound session from Codex history before rotating', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const cwd = '/workspace/project';
+    const codexHome = join(tmpDir, 'history-codex-home');
+    const sessionId = '019d7bcd-15ef-7921-a22d-4552303fee6c';
+    const adapter = new FakeAdapter([
+      { chunks: [], exitCode: 1, autoExit: false },
+      ['continued\n']
+    ]);
+
+    const run = runManagedCodex(
+      { codexArgs: ['do task'], cwd, accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, codexHome },
+        adapter,
+        output: () => undefined
+      }
+    );
+    const firstHandle = await adapter.waitForHandle();
+    await writeFile(
+      join(codexHome, 'history.jsonl'),
+      `${JSON.stringify({
+        session_id: sessionId,
+        ts: Math.floor(Date.now() / 1000),
+        text: 'hello'
+      })}\n`,
+      'utf8'
+    );
+    firstHandle.emit('data', 'Unexpected status 402 Payment Required\n');
+
+    const result = await run;
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
+    expect(adapter.spawns[1]?.args).toContain('Continue');
+  });
+
+  it('discovers an updated existing session id from Codex history before rotating', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const cwd = '/workspace/project';
+    const codexHome = join(tmpDir, 'existing-history-codex-home');
+    const sessionId = '019d7bcd-15ef-7921-a22d-4552303fee6c';
+    await mkdir(codexHome, { recursive: true });
+    await writeFile(
+      join(codexHome, 'history.jsonl'),
+      `${JSON.stringify({
+        session_id: sessionId,
+        ts: Math.floor((Date.now() - 60_000) / 1000),
+        text: 'old prompt'
+      })}\n`,
+      'utf8'
+    );
+
+    const adapter = new FakeAdapter([
+      { chunks: [], exitCode: 1, autoExit: false },
+      ['continued\n']
+    ]);
+
+    const run = runManagedCodex(
+      { codexArgs: ['do task'], cwd, accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, codexHome },
+        adapter,
+        output: () => undefined
+      }
+    );
+    const firstHandle = await adapter.waitForHandle();
+    await writeFile(
+      join(codexHome, 'history.jsonl'),
+      `${JSON.stringify({
+        session_id: sessionId,
+        ts: Math.floor((Date.now() - 60_000) / 1000),
+        text: 'old prompt'
+      })}\n${JSON.stringify({
+        session_id: sessionId,
+        ts: Math.floor(Date.now() / 1000),
+        text: 'hello'
+      })}\n`,
+      'utf8'
+    );
+    firstHandle.emit('data', 'Unexpected status 402 Payment Required\n');
+
+    const result = await run;
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
     expect(adapter.spawns[1]?.args).toContain('Continue');
   });
 
@@ -665,8 +854,9 @@ describe('runner', () => {
     });
 
     const output: string[] = [];
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
     const adapter = new FakeAdapter([
-      ['unexpected status 413 Payload Too Large: Request body exceeds your tier limit (3MB for tier 0)\n'],
+      [`Context 5% used ${sessionId}\nunexpected status 413 Payload Too Large: Request body exceeds your tier limit (3MB for tier 0)\n`],
       ['continued\n']
     ]);
 
@@ -685,12 +875,10 @@ describe('runner', () => {
     expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
     expect(adapter.spawns[1]?.env.OPENAI_API_KEY).toBe('sk-b');
     const codexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
-    expect(codexHome).toBe(join(tmpDir, 'configured-codex'));
+    expect(codexHome).toContain(join(tmpDir, 'instances'));
     expect(adapter.spawns[1]?.env.CODEX_HOME).toBe(codexHome);
     expect(adapter.spawns[1]?.args).toContain('resume');
-    expect(adapter.spawns[1]?.args).toContain('--last');
-    await expect(readFile(join(codexHome, 'auth.json'), 'utf8')).resolves.toContain('"OPENAI_API_KEY": "sk-b"');
-    await expect(readFile(join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('base_url = "https://b.example.com/v1"');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
     expect(output.join('')).toContain('[codex-relay] relay-a failed (quota); switching to relay-b');
     expect(output.join('')).toContain('[codex-relay] resuming with relay-b');
   });
@@ -707,8 +895,9 @@ describe('runner', () => {
       baseUrl: 'https://b.example.com/v1'
     });
 
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
     const adapter = new FakeAdapter([
-      ['HTTP 401 invalid api key\n'],
+      [`session_id: ${sessionId}\nHTTP 401 invalid api key\n`],
       ['continued\n']
     ]);
 
@@ -725,10 +914,10 @@ describe('runner', () => {
     const log = await readFile(rotationLogPath, 'utf8');
     expect(log).toContain('relay-a -> relay-b');
     expect(log).toContain('reason=auth');
-    expect(log).toContain('resume=last');
+    expect(log).toContain('resume=session');
   });
 
-  it('creates and updates the configured codex home before launching codex', async () => {
+  it('creates a run-scoped codex home from the configured source home before launching codex', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -748,10 +937,9 @@ describe('runner', () => {
     );
 
     const runCodexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
-    expect((await stat(runCodexHome)).isDirectory()).toBe(true);
-    expect(runCodexHome).toBe(codexHome);
-    await expect(readFile(join(codexHome, 'auth.json'), 'utf8')).resolves.toContain('"OPENAI_API_KEY": "sk-a"');
-    await expect(readFile(join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('base_url = "https://a.example.com/v1"');
+    expect(runCodexHome).toContain(join(tmpDir, 'instances'));
+    await expect(readFile(join(codexHome, 'session_index.jsonl'), 'utf8')).resolves.toBe('');
+    expect((await stat(join(codexHome, 'sessions'))).isDirectory()).toBe(true);
   });
 
   it('keeps non-interactive exec mode when resuming after rotation', async () => {
@@ -824,8 +1012,9 @@ describe('runner', () => {
 
     expect(firstAdapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
     expect(secondAdapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-b');
-    expect(firstAdapter.spawns[0]?.env.CODEX_HOME).toBe(secondAdapter.spawns[0]?.env.CODEX_HOME);
-    expect(String(firstAdapter.spawns[0]?.env.CODEX_HOME)).toBe(join(tmpDir, 'codex-home'));
+    expect(firstAdapter.spawns[0]?.env.CODEX_HOME).not.toBe(secondAdapter.spawns[0]?.env.CODEX_HOME);
+    expect(String(firstAdapter.spawns[0]?.env.CODEX_HOME)).toContain(join(tmpDir, 'instances'));
+    expect(String(secondAdapter.spawns[0]?.env.CODEX_HOME)).toContain(join(tmpDir, 'instances'));
     expect(Object.values((await loadStateFile(statePath)).leases)).toHaveLength(1);
 
     firstHandle.exit();
@@ -968,8 +1157,9 @@ describe('runner', () => {
       baseUrl: 'https://same-relay.example.com/v1'
     });
 
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
     const adapter = new FakeAdapter([
-      ['HTTP 401 invalid api key\n'],
+      [`session_id: ${sessionId}\nHTTP 401 invalid api key\n`],
       ['insufficient balance\n'],
       ['continued\n']
     ]);
@@ -989,9 +1179,8 @@ describe('runner', () => {
       'sk-bad-2',
       'sk-good-3'
     ]);
-    const codexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
-    await expect(readFile(join(codexHome, 'config.toml'), 'utf8')).resolves.toContain('base_url = "https://same-relay.example.com/v1"');
-    await expect(readFile(join(codexHome, 'auth.json'), 'utf8')).resolves.toContain('"OPENAI_API_KEY": "sk-good-3"');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
+    expect(adapter.spawns[2]?.args).toContain(sessionId);
   });
 
   it('does not rotate on medium-confidence output when the process exits successfully', async () => {
@@ -1033,9 +1222,10 @@ describe('runner', () => {
       baseUrl: 'https://b.example.com/v1'
     });
 
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
     const adapter = new FakeAdapter([
       {
-        chunks: ['too many requests\n'],
+        chunks: [`session_id: ${sessionId}\ntoo many requests\n`],
         exitCode: 1
       },
       ['continued\n']
@@ -1147,8 +1337,9 @@ describe('runner', () => {
       now: new Date('2026-05-19T00:00:00.000Z')
     });
 
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
     const adapter = new FakeAdapter([
-      ['HTTP 401 invalid api key\n'],
+      [`session_id: ${sessionId}\nHTTP 401 invalid api key\n`],
       ['continued\n']
     ]);
 
@@ -1252,9 +1443,10 @@ describe('runner', () => {
       baseUrl: 'https://b.example.com/v1'
     });
 
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
     const adapter = new FakeAdapter([
-      ['insufficient balance\n'],
-      ['HTTP 401 invalid api key\n']
+      [`session_id: ${sessionId}\ninsufficient balance\n`],
+      [`session_id: ${sessionId}\nHTTP 401 invalid api key\n`]
     ]);
 
     await expect(
