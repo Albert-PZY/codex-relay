@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.8](https://github.com/Albert-PZY/codex-relay/compare/v0.6.7...v0.6.8) (2026-05-25)
+
+
+### Bug Fixes
+
+* bind rotation recovery to explicit sessions ([c6d915a](https://github.com/Albert-PZY/codex-relay/commit/c6d915a0efcf51b4f0d82c572010b5095e68184d))
+
 ## [0.6.7](https://github.com/Albert-PZY/codex-relay/compare/v0.6.6...v0.6.7) (2026-05-23)
 
 
