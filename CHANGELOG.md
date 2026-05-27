@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/Albert-PZY/codex-relay/compare/v0.8.0...v0.8.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* avoid rotation during mcp startup ([acf59b5](https://github.com/Albert-PZY/codex-relay/commit/acf59b5fb265db1eb9c35324a57224e0b8f33b8d))
+
 ## [0.8.0](https://github.com/Albert-PZY/codex-relay/compare/v0.7.0...v0.8.0) (2026-05-27)
 
 
