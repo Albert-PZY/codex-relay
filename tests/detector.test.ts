@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectOutput, extractSessionId } from '../src/core/detector.js';
+import { detectOutput, extractSessionId, isMcpStartupPending } from '../src/core/detector.js';
 
 describe('quota detector', () => {
   it('detects high-confidence quota signals', () => {
@@ -44,10 +44,9 @@ describe('quota detector', () => {
     });
   });
 
-  it('treats Codex conversation interruption as a high-confidence rotation signal', () => {
+  it('does not rotate on Codex conversation interruption text alone', () => {
     expect(detectOutput('Conversation interrupted - tell the model what to do differently.')).toMatchObject({
-      confidence: 'high',
-      reason: 'unknown'
+      confidence: 'none'
     });
   });
 
@@ -86,6 +85,19 @@ describe('quota detector', () => {
     expect(extractSessionId(`session_id: ${id}`)).toBe(id);
     expect(extractSessionId(`Conversation ID ${id}`)).toBe(id);
     expect(extractSessionId(`Context 5% used  ${v7}`)).toBe(v7);
+  });
+
+  it('detects whether Codex is still starting MCP servers', () => {
+    expect(
+      isMcpStartupPending(
+        '• Starting MCP servers (1/3): chrome-devtools, excalidraw (4s • esc to interrupt)'
+      )
+    ).toBe(true);
+    expect(
+      isMcpStartupPending(
+        '• Starting MCP servers (3/3): chrome-devtools, excalidraw, playwright'
+      )
+    ).toBe(false);
   });
 
   it('ignores normal transcript text', () => {

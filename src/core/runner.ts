@@ -6,7 +6,7 @@ import { copyFile, link, mkdir, open, readFile, readdir, rm, stat, symlink } fro
 import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { loadAccountsFile, saveAccountsFile } from './accounts.js';
-import { detectOutput, extractSessionId } from './detector.js';
+import { detectOutput, extractSessionId, isMcpStartupPending } from './detector.js';
 import {
   recordAccountFailure,
   recordAccountSuccess,
@@ -1355,6 +1355,9 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       }
       outputDetectionBuffer = appendDetectionBuffer(outputDetectionBuffer, chunk);
       sessionId = extractSessionId(outputDetectionBuffer) ?? sessionId;
+      if (isMcpStartupPending(outputDetectionBuffer)) {
+        return;
+      }
       const match = detectOutput(outputDetectionBuffer, args.customQuotaPatterns);
       retryAfterMs = match.retryAfterMs ?? retryAfterMs;
       reason = match.reason ?? reason;

@@ -626,7 +626,7 @@ describe('runner', () => {
     expect((await loadStateFile(statePath)).pendingResumes).toBeUndefined();
   });
 
-  it('rotates on conversation interruption text even when the TUI does not exit', async () => {
+  it('does not rotate on conversation interruption text alone while the TUI is still running', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -652,7 +652,7 @@ describe('runner', () => {
       ['continued\n']
     ]);
 
-    const result = await runManagedCodex(
+    const run = runManagedCodex(
       { codexArgs: ['do task'], cwd: '/workspace/project', accountName: 'relay-a' },
       {
         paths: { accounts: accountsPath, state: statePath },
@@ -660,12 +660,62 @@ describe('runner', () => {
         output: () => undefined
       }
     );
+    const handle = await adapter.waitForHandle();
+    await wait(1200);
 
-    expect(result.usedAccount).toBe('relay-b');
-    expect(adapter.handles[0]?.killed).toBe(true);
-    expect(adapter.spawns[1]?.args).toContain('resume');
-    expect(adapter.spawns[1]?.args).toContain(sessionId);
-  });
+    expect(adapter.spawns).toHaveLength(1);
+    expect(handle.killed).toBe(false);
+    handle.exit();
+
+    const result = await run;
+
+    expect(result.usedAccount).toBe('relay-a');
+    expect(adapter.spawns).toHaveLength(1);
+    expect(handle.killed).toBe(false);
+  }, 10_000);
+
+  it('does not rotate while Codex is only starting MCP servers', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://right.codes/codex/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const handle = new ManualHandle();
+    const adapter = new ManualAdapter(handle);
+
+    const run = runManagedCodex(
+      { codexArgs: ['do task'], cwd: '/workspace/project', accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+    await adapter.waitForHandle();
+    handle.emitData('• Starting MCP servers (1/3): chrome-devtools, excalidraw (4s • esc to interrupt)\n');
+    handle.emitData('Conversation interrupted - tell the model what to do differently.\n');
+    await wait(1200);
+
+    expect(adapter.spawns).toHaveLength(1);
+    expect(handle.killed).toBe(false);
+
+    handle.emitData('• Starting MCP servers (3/3): chrome-devtools, excalidraw, playwright\n');
+    handle.emitData('ready\n');
+    handle.exit(0);
+
+    const result = await run;
+
+    expect(result.usedAccount).toBe('relay-a');
+    expect(adapter.spawns).toHaveLength(1);
+    expect(adapter.spawns[0]?.env.OPENAI_API_KEY).toBe('sk-a');
+    expect(handle.killed).toBe(false);
+  }, 10_000);
 
   it('treats Ctrl+C from the user as an intentional exit instead of a rotation trigger', async () => {
     await addAccount(accountsPath, {
@@ -2038,6 +2088,65 @@ class FakeHandle extends EventEmitter implements ProcessHandle {
   }
 }
 
+class ManualAdapter implements ProcessAdapter {
+  public readonly supportsInteractiveTui = true;
+  public spawns: Array<{
+    command: string;
+    args: string[];
+    env: NodeJS.ProcessEnv;
+    cwd?: string;
+    cols?: number;
+    rows?: number;
+  }> = [];
+  private waiter: ((handle: ManualHandle) => void) | undefined;
+
+  constructor(private readonly handle: ManualHandle) {}
+
+  spawn(command: string, args: string[], options: { env: NodeJS.ProcessEnv; cwd?: string; cols?: number; rows?: number }): ProcessHandle {
+    this.spawns.push({ command, args, env: options.env, cwd: options.cwd, cols: options.cols, rows: options.rows });
+    this.waiter?.(this.handle);
+    return this.handle;
+  }
+
+  async waitForHandle(): Promise<ManualHandle> {
+    if (this.spawns.length > 0) {
+      return this.handle;
+    }
+    return new Promise((resolve) => {
+      this.waiter = resolve;
+    });
+  }
+}
+
+class ManualHandle extends EventEmitter implements ProcessHandle {
+  public killed = false;
+  public resizes: Array<{ cols: number; rows: number }> = [];
+
+  onData(callback: (chunk: string) => void): void {
+    this.on('data', callback);
+  }
+
+  onExit(callback: (exit: { exitCode: number | null; signal: NodeJS.Signals | null }) => void): void {
+    this.on('exit', callback);
+  }
+
+  kill(): void {
+    this.killed = true;
+  }
+
+  resize(cols: number, rows: number): void {
+    this.resizes.push({ cols, rows });
+  }
+
+  emitData(chunk: string): void {
+    this.emit('data', chunk);
+  }
+
+  exit(exitCode: number): void {
+    this.emit('exit', { exitCode, signal: null });
+  }
+}
+
 class FakeInput extends EventEmitter {
   public isTTY = true;
   public isRaw = false;
@@ -2073,6 +2182,10 @@ class FakeOutputStream extends EventEmitter {
 
 function randomTestDirName(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function wait(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 1000): Promise<void> {
