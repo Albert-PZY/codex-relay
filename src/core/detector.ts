@@ -27,8 +27,7 @@ const HIGH_PATTERNS: DetectionPattern[] = [
   { pattern: /forbidden/i, reason: 'auth' },
   { pattern: /HTTP\s*401/i, reason: 'auth' },
   { pattern: /HTTP\s*403/i, reason: 'auth' },
-  { pattern: /status\s+40[13]/i, reason: 'auth' },
-  { pattern: /conversation\s+interrupted/i, reason: 'unknown' }
+  { pattern: /status\s+40[13]/i, reason: 'auth' }
 ];
 
 const MEDIUM_PATTERNS: DetectionPattern[] = [
@@ -46,6 +45,7 @@ const MEDIUM_PATTERNS: DetectionPattern[] = [
 const RETRY_AFTER_SECONDS = /retry\s+after\s+(\d+)\s*s/i;
 const AVAILABLE_IN = /available\s+in\s+(\d+)\s*(second|seconds|minute|minutes)/i;
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+const MCP_STARTUP_LINE = /Starting\s+MCP\s+servers\s+\((\d+)\/(\d+)\)/gi;
 
 export function detectOutput(raw: string, customQuotaPatterns: string[] = []): DetectorMatch {
   const output = stripVTControlCharacters(raw);
@@ -78,6 +78,18 @@ export function extractSessionId(raw: string): string | undefined {
   const output = stripVTControlCharacters(raw);
   const match = output.match(UUID);
   return match?.[0];
+}
+
+export function isMcpStartupPending(raw: string): boolean {
+  const output = stripVTControlCharacters(raw);
+  let lastMatch: RegExpExecArray | null = null;
+  for (const match of output.matchAll(MCP_STARTUP_LINE)) {
+    lastMatch = match;
+  }
+  if (!lastMatch?.[1] || !lastMatch[2]) {
+    return false;
+  }
+  return Number.parseInt(lastMatch[1], 10) < Number.parseInt(lastMatch[2], 10);
 }
 
 function extractRetryAfterMs(output: string): number | undefined {
