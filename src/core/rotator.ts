@@ -28,3 +28,7 @@ export function getAccountIndex(accountsFile: AccountsFile, name: string): numbe
 export function isAccountAvailable(name: string, now = new Date(), health?: HealthFile): boolean {
   return health ? isAccountHealthy(name, health, now) : true;
 }
+
+export function isRelayAccountAvailable(account: RelayAccount, now = new Date(), health?: HealthFile): boolean {
+  return health ? isAccountHealthy(account, health, now) : true;
+}

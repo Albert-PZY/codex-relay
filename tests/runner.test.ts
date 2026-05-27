@@ -626,6 +626,47 @@ describe('runner', () => {
     expect((await loadStateFile(statePath)).pendingResumes).toBeUndefined();
   });
 
+  it('rotates on conversation interruption text even when the TUI does not exit', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://right.codes/codex/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
+    const adapter = new FakeAdapter([
+      {
+        chunks: [
+          `Context 4% used  ${sessionId}\n`,
+          'Conversation interrupted - tell the model what to do differently.\n'
+        ],
+        exitCode: 1,
+        autoExit: false,
+        emitExitOnKill: false
+      },
+      ['continued\n']
+    ]);
+
+    const result = await runManagedCodex(
+      { codexArgs: ['do task'], cwd: '/workspace/project', accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.handles[0]?.killed).toBe(true);
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
+  });
+
   it('treats Ctrl+C from the user as an intentional exit instead of a rotation trigger', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
@@ -1446,6 +1487,46 @@ describe('runner', () => {
     expect(adapter.spawns[2]?.args).toContain(sessionId);
   });
 
+  it('skips another account entry that uses the same cooling relay key', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-same-a',
+      apiKey: 'sk-same',
+      baseUrl: 'https://same-relay.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-same-b',
+      apiKey: 'sk-same',
+      baseUrl: 'https://same-relay.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-good',
+      apiKey: 'sk-good',
+      baseUrl: 'https://same-relay.example.com/v1'
+    });
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-same-a',
+      apiKey: 'sk-same',
+      baseUrl: 'https://same-relay.example.com/v1',
+      reason: 'quota',
+      now: new Date('2026-05-19T00:00:00.000Z')
+    });
+
+    const adapter = new FakeAdapter([['ok\n']]);
+
+    const result = await runManagedCodex(
+      { codexArgs: ['do task'], accountName: 'relay-same-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, health: healthPath },
+        adapter,
+        output: () => undefined,
+        now: () => new Date('2026-05-19T00:01:00.000Z')
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-good');
+    expect(adapter.spawns.map((spawn) => spawn.env.OPENAI_API_KEY)).toEqual(['sk-good']);
+  });
+
   it('does not rotate on medium-confidence output when the process exits successfully', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
@@ -1507,7 +1588,7 @@ describe('runner', () => {
     expect(adapter.spawns).toHaveLength(2);
   });
 
-  it('records retry cooldowns from detector output', async () => {
+  it('records fixed 30 minute cooldowns from detector output', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -1538,8 +1619,9 @@ describe('runner', () => {
     expect(health.accounts['relay-a']).toMatchObject({
       status: 'cooldown',
       reason: 'quota',
-      cooldownUntil: '2026-05-19T00:00:30.000Z',
-      consecutiveFailures: 1
+      cooldownUntil: '2026-05-19T00:30:00.000Z',
+      consecutiveFailures: 1,
+      cooldownCount: 1
     });
   });
 
@@ -1556,6 +1638,7 @@ describe('runner', () => {
     });
     await recordAccountFailure(healthPath, {
       accountName: 'relay-a',
+      apiKey: 'sk-a',
       baseUrl: 'https://a.example.com/v1',
       reason: 'quota',
       now: new Date('2026-05-19T00:00:00.000Z')
@@ -1569,7 +1652,7 @@ describe('runner', () => {
         paths: { accounts: accountsPath, state: statePath, health: healthPath },
         adapter,
         output: () => undefined,
-        now: () => new Date('2026-05-19T01:00:00.000Z')
+        now: () => new Date('2026-05-19T00:01:00.000Z')
       }
     );
 
@@ -1595,6 +1678,7 @@ describe('runner', () => {
     });
     await recordAccountFailure(healthPath, {
       accountName: 'relay-b',
+      apiKey: 'sk-b',
       baseUrl: 'https://b.example.com/v1',
       reason: 'auth',
       now: new Date('2026-05-19T00:00:00.000Z')
@@ -1636,6 +1720,7 @@ describe('runner', () => {
     });
     await recordAccountFailure(healthPath, {
       accountName: 'relay-a',
+      apiKey: 'sk-a',
       baseUrl: 'https://a.example.com/v1',
       reason: 'server',
       now: new Date('2026-05-19T00:00:00.000Z')
@@ -1649,7 +1734,7 @@ describe('runner', () => {
         paths: { accounts: accountsPath, state: statePath, health: healthPath },
         adapter,
         output: () => undefined,
-        now: () => new Date('2026-05-19T00:02:00.000Z')
+        now: () => new Date('2026-05-19T00:31:00.000Z')
       }
     );
 
@@ -1657,11 +1742,11 @@ describe('runner', () => {
     expect(health.accounts['relay-a']).toMatchObject({
       status: 'active',
       consecutiveFailures: 0,
-      lastSuccessAt: '2026-05-19T00:02:00.000Z'
+      lastSuccessAt: '2026-05-19T00:31:00.000Z'
     });
   });
 
-  it('retires accounts that have failed continuously for ten days before running', async () => {
+  it('retires accounts that reached ten cooldowns before running', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
       apiKey: 'sk-a',
@@ -1672,12 +1757,15 @@ describe('runner', () => {
       apiKey: 'sk-b',
       baseUrl: 'https://b.example.com/v1'
     });
-    await recordAccountFailure(healthPath, {
-      accountName: 'relay-a',
-      baseUrl: 'https://a.example.com/v1',
-      reason: 'auth',
-      now: new Date('2026-05-10T00:00:00.000Z')
-    });
+    for (let index = 0; index < 10; index += 1) {
+      await recordAccountFailure(healthPath, {
+        accountName: 'relay-a',
+        apiKey: 'sk-a',
+        baseUrl: 'https://a.example.com/v1',
+        reason: 'auth',
+        now: new Date(`2026-05-19T00:${String(index).padStart(2, '0')}:00.000Z`)
+      });
+    }
 
     const adapter = new FakeAdapter([['ok\n']]);
 
@@ -1687,7 +1775,7 @@ describe('runner', () => {
         paths: { accounts: accountsPath, state: statePath, health: healthPath },
         adapter,
         output: () => undefined,
-        now: () => new Date('2026-05-20T00:00:01.000Z')
+        now: () => new Date('2026-05-19T00:10:00.000Z')
       }
     );
 

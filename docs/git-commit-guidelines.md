@@ -84,9 +84,9 @@ BREAKING CHANGE: import files now require a flat JSON array.
 提交前运行：
 
 ```bash
-pnpm lint
-pnpm test -- --coverage
-pnpm pack --dry-run
+npm run lint
+npm test -- --coverage
+npm pack --dry-run
 git diff --check
 ```
 

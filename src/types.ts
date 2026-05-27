@@ -28,21 +28,25 @@ export type HealthFailureReason = 'auth' | 'quota' | 'rate_limit' | 'server' | '
 export interface AccountHealth {
   status: 'active' | 'cooldown';
   baseUrl?: string;
+  credentialHash?: string;
   reason?: HealthFailureReason;
   firstFailedAt?: string;
   lastFailedAt?: string;
   lastSuccessAt?: string;
   cooldownUntil?: string;
   consecutiveFailures: number;
+  cooldownCount?: number;
 }
 
 export interface RetiredAccountHealth {
   name: string;
   baseUrl?: string;
+  credentialHash?: string;
   reason: HealthFailureReason;
   firstFailedAt: string;
   lastFailedAt: string;
   removedAt: string;
+  cooldownCount?: number;
 }
 
 export interface HealthFile {

@@ -2,10 +2,10 @@
 
 ## Workflow
 
-- Use `pnpm` for dependency and script execution.
-- Do not use `npm install` or `npm update` in this repository.
+- Use `npm` for dependency installation and the default verification path.
+- pnpm remains supported for local development when you prefer it.
 - Keep changes small and commit them by feature area.
-- Run `pnpm lint`, `pnpm test`, and `pnpm build` before opening a PR.
+- Run `npm run lint`, `npm test`, and `npm run build` before opening a PR.
 
 ## Commit Format
 

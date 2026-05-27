@@ -27,7 +27,8 @@ const HIGH_PATTERNS: DetectionPattern[] = [
   { pattern: /forbidden/i, reason: 'auth' },
   { pattern: /HTTP\s*401/i, reason: 'auth' },
   { pattern: /HTTP\s*403/i, reason: 'auth' },
-  { pattern: /status\s+40[13]/i, reason: 'auth' }
+  { pattern: /status\s+40[13]/i, reason: 'auth' },
+  { pattern: /conversation\s+interrupted/i, reason: 'unknown' }
 ];
 
 const MEDIUM_PATTERNS: DetectionPattern[] = [
@@ -36,7 +37,6 @@ const MEDIUM_PATTERNS: DetectionPattern[] = [
   { pattern: /HTTP\s*429/i, reason: 'rate_limit' },
   { pattern: /please\s+try\s+again/i, reason: 'rate_limit' },
   { pattern: /unexpected\s+status/i, reason: 'unknown' },
-  { pattern: /conversation\s+interrupted/i, reason: 'unknown' },
   { pattern: /temporarily\s+unavailable/i, reason: 'server' },
   { pattern: /model.*not.*available/i, reason: 'server' },
   { pattern: /upstream.*error/i, reason: 'server' },

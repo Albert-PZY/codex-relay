@@ -12,7 +12,12 @@ import {
   setPreferredAccount,
   type AccountInput
 } from './core/accounts.js';
-import { loadHealthFile } from './core/health.js';
+import {
+  getAccountHealth,
+  loadHealthFile,
+  resetAccountCooldown,
+  resetAllAccountCooldowns
+} from './core/health.js';
 import { loadStateFile, pruneExpiredLeases, saveStateFile } from './core/state.js';
 import { withStoreLock } from './core/store-lock.js';
 import {
@@ -95,7 +100,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       }
       for (const account of file.accounts) {
         const marker = account.name === file.preferred ? '*' : ' ';
-        const status = formatHealthStatus(health.accounts[account.name]);
+        const status = formatHealthStatus(getAccountHealth(account, health));
         const leaseText = countActiveLeases(state, account.name) > 0 ? ' in-use' : '';
         output(`${marker} ${account.name} ${account.baseUrl} ${status}${leaseText}`);
       }
@@ -174,10 +179,11 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       }
 
       for (const account of file.accounts) {
-        output(`${account.name} ${formatHealthStatus(health.accounts[account.name])}`);
+        output(`${account.name} ${formatHealthStatus(getAccountHealth(account, health))}`);
       }
       for (const retired of health.retired) {
-        output(`${retired.name} retired ${retired.reason} at ${retired.removedAt}`);
+        const count = retired.cooldownCount !== undefined ? ` cooldowns=${retired.cooldownCount}` : '';
+        output(`${retired.name} retired ${retired.reason} at ${retired.removedAt}${count}`);
       }
     });
 
@@ -191,7 +197,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       }
     });
 
-  program
+  const resetCommand = program
     .command('reset')
     .description('Clear local runtime state / 清理本地运行状态')
     .option('--resume', 'Clear pending resume sessions / 清理待恢复会话')
@@ -220,6 +226,34 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       if (options.leases) {
         output('Cleared active account leases.');
       }
+    });
+
+  resetCommand
+    .command('cooldown [name]')
+    .description('Reset account cooldown state / 重置账号冷却状态')
+    .option('--all', 'Reset all account cooldowns / 重置全部账号冷却')
+    .action(async (name: string | undefined, options: { all?: boolean }) => {
+      if (options.all && name) {
+        throw new Error('Use either reset cooldown <name> or reset cooldown --all, not both.');
+      }
+      if (!options.all && !name) {
+        throw new Error('Choose an account name or pass --all.');
+      }
+      const count = await withStoreLock(paths, async () => {
+        const file = await loadAccountsFile(paths.accounts);
+        const healthPath = resolveHealthPath(paths);
+        if (options.all) {
+          await resetAllAccountCooldowns(healthPath, file.accounts);
+          return file.accounts.length;
+        }
+        const account = file.accounts.find((candidate) => candidate.name === name);
+        if (!account) {
+          throw new Error(`Account "${name}" does not exist.`);
+        }
+        await resetAccountCooldown(healthPath, account);
+        return 1;
+      });
+      output(options.all ? `Reset cooldown for ${count} accounts.` : `Reset cooldown for ${name}.`);
     });
 
   program.action(async () => {
@@ -382,13 +416,24 @@ function resolveHealthPath(paths: Pick<DataPaths, 'accounts' | 'state'> & Partia
   return paths.health ?? join(dirname(paths.state), 'health.json');
 }
 
-function formatHealthStatus(health: AccountHealth | undefined): string {
-  if (!health || health.status === 'active') {
+function formatHealthStatus(health: AccountHealth | undefined, now = new Date()): string {
+  if (!isHealthCoolingDown(health, now)) {
     return 'active';
   }
   const reason = health.reason ?? 'unknown';
   const until = health.cooldownUntil ?? 'unknown';
-  return `cooldown ${reason} until ${until}`;
+  const count = health.cooldownCount ?? health.consecutiveFailures;
+  return `cooldown ${reason} until ${until} cooldowns=${count}`;
+}
+
+function isHealthCoolingDown(health: AccountHealth | undefined, now = new Date()): health is AccountHealth {
+  if (!health || health.status !== 'cooldown') {
+    return false;
+  }
+  if (!health.cooldownUntil) {
+    return true;
+  }
+  return new Date(health.cooldownUntil).getTime() > now.getTime();
 }
 
 async function loadFreshState(statePath: string): Promise<Awaited<ReturnType<typeof loadStateFile>>> {
@@ -423,7 +468,10 @@ async function buildDoctorReport(paths: CliDependencies['paths'] extends undefin
   const instanceCount = await countDirectories(fullPaths.instances);
   const lastRotation = await readLastLine(fullPaths.rotationLog);
   const activeLeases = Object.values(state.leases).filter((lease) => new Date(lease.expiresAt).getTime() > Date.now());
-  const cooldownCount = accountsFile.accounts.filter((account) => health.accounts[account.name]?.status === 'cooldown').length;
+  const now = new Date();
+  const cooldownCount = accountsFile.accounts.filter((account) =>
+    isHealthCoolingDown(getAccountHealth(account, health), now)
+  ).length;
   const pendingResumes = collectPendingResumeEntries(state);
   const lines = [
     'codex-relay doctor',

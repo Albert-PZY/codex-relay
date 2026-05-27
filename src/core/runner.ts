@@ -17,7 +17,7 @@ import {
   pruneExpiredLeases,
   saveStateFile
 } from './state.js';
-import { buildRotationOrder, getAccountByName, getAccountIndex, isAccountAvailable } from './rotator.js';
+import { buildRotationOrder, getAccountByName, getAccountIndex, isRelayAccountAvailable } from './rotator.js';
 import { appendRotationLog } from './rotation-log.js';
 import { withStoreLock } from './store-lock.js';
 import { readJsonFile, writeJsonAtomic, writeTextAtomic } from '../utils/atomic.js';
@@ -389,7 +389,7 @@ export async function runManagedCodex(
       }
 
       if (!result.shouldRotate) {
-        await recordSuccessfulAttempt(paths, healthPath, account.name, now(), options.disableResume ? undefined : effectiveCwd);
+        await recordSuccessfulAttempt(paths, healthPath, account, now(), options.disableResume ? undefined : effectiveCwd);
         restoreTerminal(outputStream);
         const success: SpawnResult = {
           exitCode: result.exitCode,
@@ -497,7 +497,7 @@ async function reserveNextAccountLocked(input: ReserveNextInput): Promise<Reserv
     await saveAccountsFile(input.paths.accounts, accountsFile);
   }
   if (accountsFile.accounts.length === 0) {
-    throw new Error('All relay accounts were retired after failing continuously for ten days.');
+    throw new Error('All relay accounts were retired after reaching the cooldown limit.');
   }
 
   const state = await loadPrunedState(input.paths, currentTime);
@@ -542,6 +542,7 @@ async function recordFailedAttemptAndReserveNext(input: FailureReserveInput): Pr
     const failureAt = input.now();
     await recordAccountFailure(input.healthPath, {
       accountName: input.failedAccount.name,
+      apiKey: input.failedAccount.apiKey,
       baseUrl: input.failedAccount.baseUrl,
       reason: input.result.reason ?? 'unknown',
       now: failureAt,
@@ -580,12 +581,13 @@ async function recordFailedAttemptAndReserveNext(input: FailureReserveInput): Pr
 async function recordSuccessfulAttempt(
   paths: RunnerDataPaths,
   healthPath: string,
-  accountName: string,
+  account: RelayAccount,
   successAt: Date,
   clearPendingResumeCwd?: string | undefined
 ): Promise<void> {
   await withStoreLock(paths, async () => {
     const accountsFile = await loadAccountsFile(paths.accounts);
+    const accountName = account.name;
     const accountIndex = getAccountIndex(accountsFile, accountName);
     const state = await loadStateFile(paths.state);
     const nextState: StateFile = {
@@ -603,7 +605,7 @@ async function recordSuccessfulAttempt(
       }
     }
     await saveStateFile(paths.state, nextState);
-    await recordAccountSuccess(healthPath, accountName, successAt);
+    await recordAccountSuccess(healthPath, account, successAt);
   });
 }
 
@@ -765,6 +767,7 @@ async function recordFailedAttempt(
   await withStoreLock(paths, async () => {
     await recordAccountFailure(healthPath, {
       accountName: account.name,
+      apiKey: account.apiKey,
       baseUrl: account.baseUrl,
       reason: result.reason ?? 'unknown',
       now: now(),
@@ -1187,7 +1190,7 @@ function selectLeaseAwareAccount(input: {
       continue;
     }
     const account = getAccountByName(input.accountsFile, name);
-    if (!account || !isAccountAvailable(account.name, input.now, input.health)) {
+    if (!account || !isRelayAccountAvailable(account, input.now, input.health)) {
       continue;
     }
     const shared = leasedAccountNames.has(name);

@@ -29,25 +29,26 @@ The runner keeps output passthrough simple. It watches child output with a conse
 - `codex-relay test [name]` checks one or all accounts through a lightweight OpenAI-compatible `/models` request. `UNKNOWN probe-only` is a diagnostic result, not a rotation block.
 - `codex-relay doctor` reports local paths, Codex command resolution, `node-pty` availability, active leases, pending resumes, stale instance directories, and the last rotation log line.
 - `codex-relay reset --resume` clears pending resume metadata. `codex-relay reset --leases` clears local account leases.
+- `codex-relay reset cooldown <name>` resets one account credential cooldown and marks it active. `codex-relay reset cooldown --all` resets all configured account credential cooldowns.
 
 ## Data Contract
 
-`accounts.json` is versioned and contains account records with unique names, API keys, base URLs, optional model names, and timestamps. `state.json` stores the current index, last successful account, active leases, working-directory-scoped pending resumes, and updated timestamp. `health.json` stores cooldown and retirement state. Accounts that remain in cooldown for 10 continuous days are removed from the active pool and recorded under `retired`. Writes use temporary files plus rename. Import files are JSON arrays where each item has `baseUrl`, `apiKey`, optional `name`, and optional `model`.
+`accounts.json` is versioned and contains account records with unique names, API keys, base URLs, optional model names, and timestamps. `state.json` stores the current index, last successful account, active leases, working-directory-scoped pending resumes, and updated timestamp. `health.json` stores credential-level cooldown and retirement state keyed by a hash of `baseUrl + apiKey`. Failed credentials cool down for 30 minutes. Each cooldown increments a per-credential count; successful conversation use resets that count, and credentials that reach 10 cooldowns are removed from the active pool and recorded under `retired`. Writes use temporary files plus rename. Import files are JSON arrays where each item has `baseUrl`, `apiKey`, optional `name`, and optional `model`.
 
 Local files containing secrets are ignored by git: `data.txt`, `data.json`, `切号工具.md`, `.env*`, logs, and local runtime data.
 
 ## Error Handling
 
-Detector output is normalized with Node's built-in VT control stripping. Custom quota strings from config are supported. Rotation skips accounts marked unavailable in health state until their cooldown has passed. Rotation decisions use actual Codex output, not the `/models` preflight. If no account remains, the CLI restores terminal state, prints a clear message, and exits non-zero. Interactive TUI launches require `node-pty`; when native PTY support is unavailable, the CLI fails clearly and points users to non-interactive `codex-relay exec ...`.
+Detector output is normalized with Node's built-in VT control stripping. Custom quota strings from config are supported. Rotation skips accounts whose credential is cooling down until the 30 minute cooldown has passed. Multiple configured accounts that share the same `baseUrl + apiKey` share health state so parallel `codex-relay` processes do not keep selecting the same exhausted key. Rotation decisions use actual Codex output, not the `/models` preflight. If no account remains, the CLI restores terminal state, prints a clear message, and exits non-zero. Interactive TUI launches require `node-pty`; when native PTY support is unavailable, the CLI fails clearly and points users to non-interactive `codex-relay exec ...`.
 
 Account management commands validate duplicate names, valid URLs, and non-empty keys. Test commands report individual account status without exposing full API keys.
 
 ## Packaging And Release
 
-The repository uses Node.js `>=22 <23`, TypeScript, ESM, pnpm, commander, zod, node-pty, and vitest. GitHub Actions run install, lint, test, build, and pack checks on pull requests and main. Releases use Release Please with Conventional Commits, npm provenance publishing, and moving tag sync for `vX` and `vX.Y`.
+The repository uses Node.js `>=22 <23`, TypeScript, ESM, npm, commander, zod, node-pty, and vitest. GitHub Actions run `npm ci`, lint, test, build, and pack checks on pull requests and main. Releases use Release Please with Conventional Commits, npm provenance publishing, and moving tag sync for `vX` and `vX.Y`. pnpm remains compatible for local development.
 
 If a PR is mergeable but branch protection blocks normal merge after required checks have passed, maintainers may use an admin merge or force-capable merge path that is allowed by the repository rules. The release flow must not stop at a protected-branch merge error: finish the merge, let Release Please create the version PR, trigger checks on the Release Please branch when needed, merge the version PR, then verify GitHub Release, tags, npm, and the local global install.
 
 ## Documentation
 
-`README.md` explains install, quick start, account import, managed run, rotation limits, and security notes. `CONTRIBUTING.md` defines Conventional Commits, branch discipline, pnpm-only workflow, and functional commit grouping. `.gitignore` excludes sensitive local files and generated build output.
+`README.md` explains install, quick start, account import, managed run, rotation limits, and security notes. `CONTRIBUTING.md` defines Conventional Commits, branch discipline, npm-first workflow, pnpm compatibility, and functional commit grouping. `.gitignore` excludes sensitive local files and generated build output.
