@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/Albert-PZY/codex-relay/compare/v0.7.0...v0.8.0) (2026-05-27)
+
+
+### Features
+
+* harden relay credential cooldowns ([1783ebf](https://github.com/Albert-PZY/codex-relay/commit/1783ebf7ffb3dfedefcf9fb6f655ca75fe6c67fb))
+
 ## [0.7.0](https://github.com/Albert-PZY/codex-relay/compare/v0.6.10...v0.7.0) (2026-05-25)
 
 
