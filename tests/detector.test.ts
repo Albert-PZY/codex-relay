@@ -42,8 +42,11 @@ describe('quota detector', () => {
       confidence: 'medium',
       reason: 'rate_limit'
     });
+  });
+
+  it('treats Codex conversation interruption as a high-confidence rotation signal', () => {
     expect(detectOutput('Conversation interrupted - tell the model what to do differently.')).toMatchObject({
-      confidence: 'medium',
+      confidence: 'high',
       reason: 'unknown'
     });
   });

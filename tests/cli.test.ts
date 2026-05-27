@@ -139,9 +139,10 @@ describe('cli', () => {
     await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
     await recordAccountFailure(healthPath, {
       accountName: 'relay-a',
+      apiKey: 'sk-a',
       baseUrl: 'https://a.example.com/v1',
       reason: 'quota',
-      now: new Date('2026-05-19T00:00:00.000Z')
+      now: new Date('2099-01-01T00:00:00.000Z')
     });
     await program.parseAsync(['node', 'codex-relay', 'list']);
 
@@ -227,9 +228,10 @@ describe('cli', () => {
     await program.parseAsync(['node', 'codex-relay', 'add', 'relay-b', '--key', 'sk-b', '--base-url', 'https://b.example.com/v1']);
     await recordAccountFailure(healthPath, {
       accountName: 'relay-a',
+      apiKey: 'sk-a',
       baseUrl: 'https://a.example.com/v1',
       reason: 'quota',
-      now: new Date('2026-05-19T00:00:00.000Z')
+      now: new Date('2099-01-01T00:00:00.000Z')
     });
     const health = await loadHealthFile(healthPath);
     await saveHealthFile(healthPath, {
@@ -250,6 +252,7 @@ describe('cli', () => {
     await program.parseAsync(['node', 'codex-relay', 'health']);
 
     expect(output.join('\n')).toContain('relay-a cooldown quota until');
+    expect(output.join('\n')).toContain('cooldowns=1');
     expect(output.join('\n')).toContain('relay-b active');
     expect(output.join('\n')).toContain('relay-old retired auth at 2026-05-11T00:00:00.000Z');
   });
@@ -459,6 +462,66 @@ describe('cli', () => {
     await expect(program.parseAsync(['node', 'codex-relay', 'reset'])).rejects.toThrow(
       /choose what to reset/i
     );
+  });
+
+  it('resets one account cooldown with reset cooldown <name>', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath, health: healthPath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1',
+      reason: 'quota',
+      now: new Date('2026-05-19T00:00:00.000Z')
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'reset', 'cooldown', 'relay-a']);
+
+    const health = await loadHealthFile(healthPath);
+    expect(health.accounts['relay-a']).toMatchObject({
+      status: 'active',
+      consecutiveFailures: 0,
+      cooldownCount: 0
+    });
+    expect(health.accounts['relay-a']?.cooldownUntil).toBeUndefined();
+    expect(output).toContain('Reset cooldown for relay-a.');
+  });
+
+  it('resets all account cooldowns with reset cooldown --all', async () => {
+    const output: string[] = [];
+    const program = createCliProgram({
+      paths: { accounts: accountsPath, state: statePath, health: healthPath },
+      output: (text) => output.push(text)
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'add', 'relay-a', '--key', 'sk-a', '--base-url', 'https://a.example.com/v1']);
+    await program.parseAsync(['node', 'codex-relay', 'add', 'relay-b', '--key', 'sk-b', '--base-url', 'https://b.example.com/v1']);
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1',
+      reason: 'quota',
+      now: new Date('2026-05-19T00:00:00.000Z')
+    });
+    await recordAccountFailure(healthPath, {
+      accountName: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1',
+      reason: 'auth',
+      now: new Date('2026-05-19T00:01:00.000Z')
+    });
+
+    await program.parseAsync(['node', 'codex-relay', 'reset', 'cooldown', '--all']);
+
+    const health = await loadHealthFile(healthPath);
+    expect(health.accounts['relay-a']).toMatchObject({ status: 'active', cooldownCount: 0 });
+    expect(health.accounts['relay-b']).toMatchObject({ status: 'active', cooldownCount: 0 });
+    expect(output).toContain('Reset cooldown for 2 accounts.');
   });
 
   it('imports accounts from a json file', async () => {

@@ -5,7 +5,7 @@
 ## 安装
 
 ```bash
-pnpm add -g codex-relay-cli@latest
+npm install -g codex-relay-cli@latest
 ```
 
 要求：
@@ -74,6 +74,8 @@ codex-relay "帮我完成当前项目"
 | `codex-relay doctor` | 查看本机路径、Codex 命令、PTY、租约和待恢复会话 |
 | `codex-relay reset --resume` | 清理待恢复会话 |
 | `codex-relay reset --leases` | 清理本机账号租约 |
+| `codex-relay reset cooldown <name>` | 立即解除单个账号冷却并恢复活跃 |
+| `codex-relay reset cooldown --all` | 立即解除号池内全部账号冷却 |
 | `codex-relay use <name>` | 设置默认优先账号 |
 | `codex-relay remove <name>` | 删除账号 |
 | `codex-relay --account <name> "任务"` | 本次运行指定账号 |
@@ -88,8 +90,10 @@ codex-relay "帮我完成当前项目"
 
 - 真实切号根据 Codex 对话输出判断，不依赖 `/models`。
 - `codex-relay test` 的 `UNKNOWN probe-only` 只表示 `/models` 不能确认可用性，中转站仍可能正常对话。
-- 失败账号进入冷却期；真实对话成功后恢复可用。
-- 连续 10 天未恢复的账号会从号池移除，并写入 `health.json.retired`。
+- 失败凭证按 `baseUrl + apiKey` 进入 30 分钟冷却；多个账号条目使用同一个 key 时会共享冷却状态，避免重复选中同一失效 key。
+- 每个 key 会记录冷却次数；累计达到 10 次时自动从号池移除，并写入 `health.json.retired`。
+- 真实对话成功后会恢复可用，并清零该 key 的冷却次数。
+- 需要人工恢复时可用 `codex-relay reset cooldown <name>` 重置单个账号，或用 `codex-relay reset cooldown --all` 一键重置全部账号冷却。
 - 能识别明确会话 ID 时使用 `codex resume <session-id> Continue`；识别不到时停止自动切换，不猜测上一条会话。
 - 每个项目目录的待恢复会话分别记录，多个终端不会互相抢恢复状态。
 
@@ -120,7 +124,7 @@ codex-relay "帮我完成当前项目"
 
 `codex-relay` 是官方 Codex CLI 的轻量外壳，不实现模型客户端。核心职责是管理号池、选择账号、准备运行级 Codex Home、监听 Codex 输出、记录健康状态，并在可确认会话 ID 时恢复对话。
 
-技术栈：Node.js 22 LTS、TypeScript + ESM、commander、zod、node-pty、Vitest、pnpm、GitHub Actions + Release Please。
+技术栈：Node.js 22 LTS、TypeScript + ESM、commander、zod、node-pty、Vitest、npm、GitHub Actions + Release Please。仓库保留 pnpm lockfile，习惯 pnpm 的开发者仍可用 `pnpm install` 和 `pnpm test` 等脚本。
 
 ```mermaid
 flowchart LR
@@ -143,11 +147,13 @@ flowchart LR
 ## 开发与发布
 
 ```bash
-pnpm install
-pnpm lint
-pnpm test
-pnpm build
-pnpm pack --dry-run
+npm install
+npm run lint
+npm test
+npm run build
+npm pack --dry-run
 ```
+
+如果你本地使用 pnpm，也可以继续执行 `pnpm install`、`pnpm lint`、`pnpm test`、`pnpm build` 和 `pnpm pack --dry-run`。
 
 提交规范见 [docs/git-commit-guidelines.md](docs/git-commit-guidelines.md)，npm 发布配置见 [docs/npm-publish-setup.md](docs/npm-publish-setup.md)。

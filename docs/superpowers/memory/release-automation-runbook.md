@@ -71,11 +71,11 @@ After a release, verify:
 npm view codex-relay-cli name version dist-tags bin --registry=https://registry.npmjs.org
 gh release list --limit 5
 git ls-remote --tags origin
-pnpm add -g codex-relay-cli@latest --registry=https://registry.npmjs.org
+npm install -g codex-relay-cli@latest --registry=https://registry.npmjs.org
 codex-relay --help
 ```
 
-## Windows pnpm Global Shim SOP
+## Windows pnpm Compatibility Shim SOP
 
 On this machine, `pnpm add -g codex-relay-cli@<version> --global-dir "G:\develop\nvm\nodejs" --config.global-bin-dir="G:\develop\nvm\nodejs"` can download the package but fail while refreshing the root `codex-relay` shims with `ENOENT`. When that happens:
 

@@ -63,34 +63,28 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.release.outputs.release_created && steps.release.outputs.sha || github.sha }}
 
-      - name: Setup pnpm
-        if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.1.0
-
       - name: Setup Node
         if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
         uses: actions/setup-node@v4
         with:
           node-version: 22.x
-          cache: pnpm
+          cache: npm
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       - name: Verify package
         if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
         run: |
-          pnpm lint
-          pnpm test
-          pnpm build
-          pnpm pack --dry-run
+          npm run lint
+          npm test
+          npm run build
+          npm pack --dry-run
 
       - name: Publish to npm
         if: ${{ steps.release.outputs.release_created || steps.publish.outputs.needed == 'true' }}
-        run: pnpm publish --access public --provenance --no-git-checks
+        run: npm publish --access public --provenance --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
