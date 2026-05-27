@@ -717,6 +717,41 @@ describe('runner', () => {
     expect(handle.killed).toBe(false);
   }, 10_000);
 
+  it('does not rotate on a nonzero exit while MCP servers are still starting', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://right.codes/codex/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const handle = new ManualHandle();
+    const adapter = new ManualAdapter(handle);
+
+    const run = runManagedCodex(
+      { codexArgs: ['do task'], cwd: '/workspace/project', accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+    await adapter.waitForHandle();
+    handle.emitData('• Starting MCP servers (1/3): chrome-devtools, excalidraw (4s • esc to interrupt)\n');
+    handle.emitData('session_id: 019e365c-a287-74a3-890e-5b23a633f3c1\n');
+    handle.exit(1);
+
+    const result = await run;
+
+    expect(result.usedAccount).toBe('relay-a');
+    expect(result.exitCode).toBe(1);
+    expect(adapter.spawns).toHaveLength(1);
+  });
+
   it('treats Ctrl+C from the user as an intentional exit instead of a rotation trigger', async () => {
     await addAccount(accountsPath, {
       name: 'relay-a',
@@ -1063,6 +1098,143 @@ describe('runner', () => {
     expect(adapter.spawns[1]?.args).toContain('resume');
     expect(adapter.spawns[1]?.args).toContain(sessionId);
     expect(adapter.spawns[1]?.args).toContain('Continue');
+  });
+
+  it('refreshes a resumed conversation to the new session id before rotating', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const cwd = '/workspace/project';
+    const oldSessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
+    const newSessionId = '019f0000-a287-74a3-890e-5b23a633f3c2';
+    await saveStateFile(statePath, {
+      version: 1,
+      currentIndex: 0,
+      leases: {},
+      pendingResumes: {
+        [cwd]: {
+          sessionId: oldSessionId,
+          prompt: 'Continue',
+          cwd,
+          updatedAt: '2026-05-23T00:00:00.000Z'
+        }
+      },
+      updatedAt: '2026-05-23T00:00:00.000Z'
+    });
+
+    const adapter = new FakeAdapter([
+      { chunks: [], exitCode: 1, autoExit: false },
+      ['continued\n']
+    ]);
+
+    const run = runManagedCodex(
+      { codexArgs: [], cwd, accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+    const firstHandle = await adapter.waitForHandle();
+    const runCodexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
+    const sessionDir = join(runCodexHome, 'sessions', '2026', '05', '24');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, `${oldSessionId}.jsonl`),
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: oldSessionId,
+          cwd,
+          timestamp: new Date(Date.now() + 1_000).toISOString()
+        }
+      })}\n`,
+      'utf8'
+    );
+    await writeFile(
+      join(sessionDir, `${newSessionId}.jsonl`),
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: newSessionId,
+          cwd,
+          timestamp: new Date().toISOString()
+        }
+      })}\n`,
+      'utf8'
+    );
+    firstHandle.emit('data', 'HTTP 401 invalid api key\n');
+
+    const result = await run;
+
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
+    expect(adapter.spawns[0]?.args).toContain(oldSessionId);
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain(newSessionId);
+    expect(adapter.spawns[1]?.args).not.toContain(oldSessionId);
+    expect((await loadStateFile(statePath)).pendingResumes).toBeUndefined();
+  });
+
+  it('rotates after discovering a session file when Codex exits without printing the session id', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const cwd = '/workspace/project';
+    const sessionId = '019f0000-a287-74a3-890e-5b23a633f3c3';
+    const adapter = new FakeAdapter([
+      { chunks: [], exitCode: 1, autoExit: false },
+      ['continued\n']
+    ]);
+
+    const run = runManagedCodex(
+      { codexArgs: ['do task'], cwd, accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath },
+        adapter,
+        output: () => undefined
+      }
+    );
+    const firstHandle = await adapter.waitForHandle();
+    const runCodexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
+    const sessionDir = join(runCodexHome, 'sessions', '2026', '05', '24');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, `${sessionId}.jsonl`),
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: sessionId,
+          cwd,
+          timestamp: new Date().toISOString()
+        }
+      })}\n`,
+      'utf8'
+    );
+    firstHandle.exit();
+
+    const result = await run;
+
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
   });
 
   it('automatically resumes a pending interrupted session on the next empty launch', async () => {
@@ -1636,6 +1808,63 @@ describe('runner', () => {
 
     expect(result.usedAccount).toBe('relay-b');
     expect(adapter.spawns).toHaveLength(2);
+  });
+
+  it('rotates and resumes when Codex exits unsuccessfully after a session is bound', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+    await addAccount(accountsPath, {
+      name: 'relay-b',
+      apiKey: 'sk-b',
+      baseUrl: 'https://b.example.com/v1'
+    });
+
+    const cwd = '/workspace/project';
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c1';
+    await saveStateFile(statePath, {
+      version: 1,
+      currentIndex: 0,
+      leases: {},
+      pendingResumes: {
+        [cwd]: {
+          sessionId,
+          prompt: 'Continue',
+          cwd,
+          updatedAt: '2026-05-23T00:00:00.000Z'
+        }
+      },
+      updatedAt: '2026-05-23T00:00:00.000Z'
+    });
+
+    const adapter = new FakeAdapter([
+      { chunks: ['ready\n'], exitCode: 1 },
+      ['continued\n']
+    ]);
+
+    const result = await runManagedCodex(
+      { codexArgs: [], cwd, accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, health: healthPath, rotationLog: rotationLogPath },
+        adapter,
+        output: () => undefined,
+        now: () => new Date('2026-05-23T00:01:00.000Z')
+      }
+    );
+
+    expect(result.usedAccount).toBe('relay-b');
+    expect(adapter.spawns).toHaveLength(2);
+    expect(adapter.spawns[1]?.args).toContain('resume');
+    expect(adapter.spawns[1]?.args).toContain(sessionId);
+    const log = await readFile(rotationLogPath, 'utf8');
+    expect(JSON.parse(log.trim())).toMatchObject({
+      fromAccount: 'relay-a',
+      toAccount: 'relay-b',
+      reason: 'unknown',
+      sessionId
+    });
   });
 
   it('records fixed 30 minute cooldowns from detector output', async () => {
