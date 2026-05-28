@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3](https://github.com/Albert-PZY/codex-relay/compare/v0.8.2...v0.8.3) (2026-05-28)
+
+
+### Bug Fixes
+
+* recover context overflow sessions ([4f72f59](https://github.com/Albert-PZY/codex-relay/commit/4f72f596f25d736479a55857fd3cfe2c1058cb33))
+
 ## [0.8.2](https://github.com/Albert-PZY/codex-relay/compare/v0.8.1...v0.8.2) (2026-05-28)
 
 
