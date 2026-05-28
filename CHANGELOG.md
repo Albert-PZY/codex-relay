@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/Albert-PZY/codex-relay/compare/v0.8.1...v0.8.2) (2026-05-28)
+
+
+### Bug Fixes
+
+* refresh sessions before relay rotation ([#63](https://github.com/Albert-PZY/codex-relay/issues/63)) ([1d50f27](https://github.com/Albert-PZY/codex-relay/commit/1d50f275d78f664f1cab390b993741f57ea2ce36))
+
 ## [0.8.1](https://github.com/Albert-PZY/codex-relay/compare/v0.8.0...v0.8.1) (2026-05-27)
 
 
