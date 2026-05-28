@@ -39,6 +39,13 @@ const MEDIUM_PATTERNS: DetectionPattern[] = [
   { pattern: /temporarily\s+unavailable/i, reason: 'server' },
   { pattern: /model.*not.*available/i, reason: 'server' },
   { pattern: /upstream.*error/i, reason: 'server' },
+  { pattern: /upstream.*(?:timeout|timed\s*out|failed|unavailable)/i, reason: 'server' },
+  { pattern: /stream\s+(?:error|disconnected|closed|aborted)/i, reason: 'server' },
+  { pattern: /connection\s+(?:reset|closed|aborted|refused)/i, reason: 'server' },
+  { pattern: /\b(?:ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED)\b/i, reason: 'server' },
+  { pattern: /network\s+error/i, reason: 'server' },
+  { pattern: /request\s+(?:failed|timed\s*out)/i, reason: 'server' },
+  { pattern: /provider.*error/i, reason: 'server' },
   { pattern: /HTTP\s*50[0-4]/i, reason: 'server' }
 ];
 

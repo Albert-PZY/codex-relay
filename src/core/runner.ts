@@ -69,6 +69,7 @@ interface RunAttemptResult {
   signal: NodeJS.Signals | null;
   shouldRotate: boolean;
   sessionId?: string;
+  rotateOnSessionDiscovery?: boolean;
   retryAfterMs?: number;
   reason?: HealthFailureReason;
 }
@@ -80,6 +81,7 @@ type SessionCandidate = {
   cwd: string | null;
   timestampMs: number;
 };
+type SessionSelectionMode = 'closest-to-launch' | 'latest';
 type ResumeRequest = {
   sessionId: string;
   prompt: string;
@@ -130,6 +132,7 @@ const HIGH_CONFIDENCE_GRACEFUL_ROTATION_MS = 800;
 const SESSION_DISCOVERY_POLL_INTERVAL_MS = 50;
 const SESSION_DISCOVERY_TIMEOUT_MS = 1_000;
 const SESSION_HISTORY_TAIL_BYTES = 64 * 1024;
+const CONVERSATION_INTERRUPTED_NOTICE = /Conversation interrupted - tell the model what to do differently\./i;
 
 export function resolveCodexSpawnTarget(
   env: NodeJS.ProcessEnv = process.env,
@@ -365,27 +368,27 @@ export async function runManagedCodex(
       }
       output(formatAccountNotice(account, attemptArgs.resume !== undefined));
 
-      let knownSessionIds = new Map<string, number>();
-      let launchStartedAt = 0;
-      if (!sessionId) {
-        knownSessionIds = await snapshotKnownSessionIds(instanceDir);
-        launchStartedAt = Date.now();
-      }
+      const knownSessionIds = await snapshotKnownSessionIds(instanceDir);
+      const launchStartedAt = Date.now();
 
       const result = await runAttempt(attemptArgs);
 
-      sessionId = result.sessionId ?? sessionId;
-      if (!sessionId) {
-        const discoveredSessionId = await waitForSessionId({
-          instanceDir,
-          workspaceDir: effectiveCwd,
-          launchStartedAt,
-          knownSessionIds,
-          timeoutMs: result.shouldRotate ? SESSION_DISCOVERY_TIMEOUT_MS : 0
-        });
-        if (discoveredSessionId) {
-          sessionId = discoveredSessionId;
-        }
+      const discoveredSessionId = await waitForSessionId({
+        instanceDir,
+        workspaceDir: effectiveCwd,
+        launchStartedAt,
+        knownSessionIds,
+        timeoutMs: result.shouldRotate || result.rotateOnSessionDiscovery ? SESSION_DISCOVERY_TIMEOUT_MS : 0,
+        selectionMode: sessionId ? 'latest' : 'closest-to-launch',
+        currentSessionId: sessionId
+      });
+      if (discoveredSessionId) {
+        sessionId = discoveredSessionId;
+      } else {
+        sessionId = result.sessionId ?? sessionId;
+      }
+      if (!result.shouldRotate && result.rotateOnSessionDiscovery && sessionId) {
+        result.shouldRotate = true;
       }
 
       if (!result.shouldRotate) {
@@ -791,6 +794,8 @@ async function waitForSessionId(options: {
   launchStartedAt: number;
   knownSessionIds: Map<string, number>;
   timeoutMs: number;
+  selectionMode?: SessionSelectionMode;
+  currentSessionId?: string | undefined;
 }): Promise<string | undefined> {
   const deadline = Date.now() + Math.max(0, options.timeoutMs);
 
@@ -799,7 +804,9 @@ async function waitForSessionId(options: {
     const discovered = selectBestSessionCandidate(
       candidates.filter((candidate) => isNewOrUpdatedSessionCandidate(candidate, options.knownSessionIds)),
       options.workspaceDir,
-      options.launchStartedAt
+      options.launchStartedAt,
+      options.selectionMode ?? 'closest-to-launch',
+      options.currentSessionId
     );
     if (discovered) {
       return discovered;
@@ -939,11 +946,21 @@ async function collectSessionFiles(root: string): Promise<string[]> {
 function selectBestSessionCandidate(
   candidates: SessionCandidate[],
   workspaceDir: string,
-  launchStartedAt: number
+  launchStartedAt: number,
+  selectionMode: SessionSelectionMode,
+  currentSessionId: string | undefined
 ): string | undefined {
   const freshCandidates = candidates.filter((candidate) => candidate.timestampMs >= launchStartedAt - 60_000);
   const cwdMatched = freshCandidates.filter((candidate) => candidate.cwd === null || isSameCwd(candidate.cwd, workspaceDir));
   const ranked = (cwdMatched.length > 0 ? cwdMatched : freshCandidates).sort((left, right) => {
+    if (selectionMode === 'latest') {
+      const leftIsCurrent = currentSessionId !== undefined && left.id === currentSessionId;
+      const rightIsCurrent = currentSessionId !== undefined && right.id === currentSessionId;
+      if (leftIsCurrent !== rightIsCurrent) {
+        return leftIsCurrent ? 1 : -1;
+      }
+      return right.timestampMs - left.timestampMs;
+    }
     const leftDelta = Math.abs(left.timestampMs - launchStartedAt);
     const rightDelta = Math.abs(right.timestampMs - launchStartedAt);
     if (leftDelta !== rightDelta) {
@@ -1288,7 +1305,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
     let settled = false;
     let shouldRotate = false;
     let mediumSignalSeen = false;
-    let sessionId: string | undefined;
+    let sessionId: string | undefined = args.resume?.sessionId;
     let retryAfterMs: number | undefined;
     let reason: HealthFailureReason | undefined;
     let outputDetectionBuffer = '';
@@ -1337,13 +1354,19 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       args.outputStream.off('resize', forwardResize);
       restoreInputMode?.();
       const failed = exit.exitCode !== 0 && exit.exitCode !== null;
+      const shouldRotateAfterFailure =
+        failed &&
+        Boolean(sessionId) &&
+        !isMcpStartupPending(outputDetectionBuffer) &&
+        !isConversationInterruptedOnly(outputDetectionBuffer);
       resolve({
         exitCode: exit.exitCode,
         signal: exit.signal,
-        shouldRotate: userExitRequested ? false : shouldRotate || (mediumSignalSeen && failed),
+        shouldRotate: userExitRequested ? false : shouldRotate || (mediumSignalSeen && failed) || shouldRotateAfterFailure,
         ...(sessionId ? { sessionId } : {}),
+        ...(userExitRequested || !shouldRotateAfterSessionDiscovery(failed, outputDetectionBuffer) ? {} : { rotateOnSessionDiscovery: true }),
         ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-        ...(reason ? { reason } : {})
+        ...(reason ?? shouldRotateAfterFailure ? { reason: reason ?? 'unknown' } : {})
       });
     };
 
@@ -1394,6 +1417,19 @@ function appendDetectionBuffer(current: string, chunk: string): string {
   return next.length <= OUTPUT_DETECTION_BUFFER_LIMIT
     ? next
     : next.slice(next.length - OUTPUT_DETECTION_BUFFER_LIMIT);
+}
+
+function shouldRotateAfterSessionDiscovery(failed: boolean, output: string): boolean {
+  return failed && !isMcpStartupPending(output) && !isConversationInterruptedOnly(output);
+}
+
+function isConversationInterruptedOnly(output: string): boolean {
+  const meaningfulLines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !extractSessionId(line));
+  return meaningfulLines.length > 0 && meaningfulLines.every((line) => CONVERSATION_INTERRUPTED_NOTICE.test(line));
 }
 
 function isInteractiveTuiAttempt(codexArgs: string[], resume?: ResumeRequest): boolean {

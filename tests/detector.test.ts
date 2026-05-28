@@ -57,6 +57,17 @@ describe('quota detector', () => {
     });
   });
 
+  it('classifies stream and network interruptions as server failures', () => {
+    expect(detectOutput('stream disconnected while reading response')).toMatchObject({
+      confidence: 'medium',
+      reason: 'server'
+    });
+    expect(detectOutput('request failed: ECONNRESET')).toMatchObject({
+      confidence: 'medium',
+      reason: 'server'
+    });
+  });
+
   it('extracts retry metadata without forcing high confidence', () => {
     const result = detectOutput('Please retry after 30s.');
 
