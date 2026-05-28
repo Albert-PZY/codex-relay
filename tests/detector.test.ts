@@ -116,6 +116,16 @@ describe('quota detector', () => {
         '• Starting MCP servers (3/3): chrome-devtools, excalidraw, playwright'
       )
     ).toBe(false);
+    expect(
+      isMcpStartupPending(
+        '• Starting MCP servers (1/3): chrome-devtools\nReady  Context 85% used'
+      )
+    ).toBe(false);
+    expect(
+      isMcpStartupPending(
+        '• Starting MCP servers (1/3): chrome-devtools\nConversation interrupted - tell the model what to do differently.\nunexpected status 413 Payload Too Large'
+      )
+    ).toBe(false);
   });
 
   it('ignores normal transcript text', () => {
