@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.4](https://github.com/Albert-PZY/codex-relay/compare/v0.8.3...v0.8.4) (2026-05-28)
+
+
+### Bug Fixes
+
+* recover live tui context overflows ([49a132a](https://github.com/Albert-PZY/codex-relay/commit/49a132a9ec7c2e89908f2abdaced582cfc78f4ec))
+
 ## [0.8.3](https://github.com/Albert-PZY/codex-relay/compare/v0.8.2...v0.8.3) (2026-05-28)
 
 
