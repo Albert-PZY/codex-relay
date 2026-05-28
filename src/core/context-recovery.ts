@@ -103,7 +103,8 @@ function mightContainUserInputLine(line: string): boolean {
 }
 
 function isAutomaticContinuePrompt(prompt: string): boolean {
-  return prompt.trim().toLowerCase() === 'continue';
+  const normalized = prompt.trim().toLowerCase();
+  return /^(?:continue|继续|接着|继续执行|继续你的任务)[.!。！]*$/.test(normalized);
 }
 
 function extractUserInput(value: unknown, workspaceDir: string): ContextRecoveryInput | undefined {

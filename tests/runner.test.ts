@@ -1407,6 +1407,9 @@ describe('runner', () => {
         type: 'event_msg',
         payload: { type: 'user_message', message: 'Continue', images: [], local_images: [], text_elements: [] }
       })}\n${JSON.stringify({
+        type: 'event_msg',
+        payload: { type: 'user_message', message: '继续', images: [], local_images: [], text_elements: [] }
+      })}\n${JSON.stringify({
         type: 'response_item',
         payload: { type: 'function_call_output', call_id: 'call-1', output: trailingToolOutput }
       })}\n`,
@@ -1427,6 +1430,59 @@ describe('runner', () => {
     expect(output.join('')).toContain('starting a fresh conversation');
     expect(await loadHealthFile(healthPath)).toMatchObject({ accounts: {} });
     await expect(readFile(rotationLogPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('actively recovers when context overflow leaves the Codex TUI alive', async () => {
+    await addAccount(accountsPath, {
+      name: 'relay-a',
+      apiKey: 'sk-a',
+      baseUrl: 'https://a.example.com/v1'
+    });
+
+    const cwd = '/workspace/project';
+    const output: string[] = [];
+    const sessionId = '019e365c-a287-74a3-890e-5b23a633f3c5';
+    const adapter = new FakeAdapter([
+      { chunks: [], exitCode: 0, autoExit: false, emitExitOnKill: false },
+      ['continued\n']
+    ]);
+
+    const run = runManagedCodex(
+      { codexArgs: ['do task'], cwd, accountName: 'relay-a' },
+      {
+        paths: { accounts: accountsPath, state: statePath, health: healthPath },
+        adapter,
+        output: (chunk) => output.push(chunk)
+      }
+    );
+    const firstHandle = await adapter.waitForHandle();
+    const runCodexHome = String(adapter.spawns[0]?.env.CODEX_HOME);
+    const sessionDir = join(runCodexHome, 'sessions', '2026', '05', '24');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, `${sessionId}.jsonl`),
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: { id: sessionId, cwd, timestamp: new Date().toISOString() }
+      })}\n${JSON.stringify({
+        type: 'event_msg',
+        payload: { type: 'user_message', message: 'Run /review on my current changes', images: [], local_images: [], text_elements: [] }
+      })}\n`,
+      'utf8'
+    );
+    firstHandle.emit(
+      'data',
+      `• Starting MCP servers (1/3): chrome-devtools\nReady  Context 85% used  ${sessionId}\nConversation interrupted - tell the model what to do differently.\nunexpected status 413 Payload Too Large: Request body exceeds your tier limit (3MB for tier 0), url: https://api.freemodel.dev/responses\n`
+    );
+
+    const result = await run;
+
+    expect(result.usedAccount).toBe('relay-a');
+    expect(firstHandle.killed).toBe(true);
+    expect(adapter.spawns).toHaveLength(2);
+    expect(adapter.spawns[1]?.args).not.toContain('resume');
+    expect(adapter.spawns[1]?.args.join('\n')).toContain('Run /review on my current changes');
+    expect(output.join('')).toContain('starting a fresh conversation');
   });
 
   it('resumes the recovered session if the fresh conversation later rotates accounts', async () => {

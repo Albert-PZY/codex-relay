@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import { loadAccountsFile, saveAccountsFile } from './accounts.js';
 import {
   buildCodexArgs,
@@ -79,7 +80,10 @@ const ACCOUNT_LEASE_HEARTBEAT_MS = 30 * 1000;
 const OUTPUT_DETECTION_BUFFER_LIMIT = 8192;
 const ROTATION_EXIT_FALLBACK_MS = 250;
 const HIGH_CONFIDENCE_GRACEFUL_ROTATION_MS = 800;
+const CONTEXT_OVERFLOW_EXIT_FALLBACK_MS = 250;
 const CONVERSATION_INTERRUPTED_NOTICE = /Conversation interrupted - tell the model what to do differently\./i;
+const ABNORMAL_CONTEXT_OVERFLOW_LINE =
+  /^\s*(?:error:\s*)?(?:unexpected\s+status\s+413\b|HTTP\s*413\b\s*[: -]*\s*Payload\s+Too\s+Large\b|413\s+Payload\s+Too\s+Large\b)|\brequest\s+body\s+exceeds\s+your\s+tier\s+limit\b/i;
 const MAX_CONTEXT_OVERFLOW_RECOVERIES = 1;
 
 export async function runManagedCodex(
@@ -700,6 +704,8 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
     let inlineNoticeWritten = false;
     let rotationFallback: NodeJS.Timeout | undefined;
     let gracefulRotationTimer: NodeJS.Timeout | undefined;
+    let contextOverflowFallback: NodeJS.Timeout | undefined;
+    let contextOverflowRecoveryRequested = false;
     const terminalSize = getTerminalSize(args.outputStream);
     const spawnOptions: SpawnOptions = {
       env: buildCodexEnv(args.account, args.env, args.codexHome),
@@ -738,11 +744,19 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
         clearTimeout(gracefulRotationTimer);
         gracefulRotationTimer = undefined;
       }
+      if (contextOverflowFallback) {
+        clearTimeout(contextOverflowFallback);
+        contextOverflowFallback = undefined;
+      }
       args.input.off('data', forwardInput);
       args.outputStream.off('resize', forwardResize);
       restoreInputMode?.();
       const failed = exit.exitCode !== 0 && exit.exitCode !== null;
-      const contextOverflow = contextOverflowSeen && failed && !userExitRequested && !isMcpStartupPending(outputDetectionBuffer);
+      const contextOverflow =
+        contextOverflowSeen &&
+        (failed || contextOverflowRecoveryRequested) &&
+        !userExitRequested &&
+        !isMcpStartupPending(outputDetectionBuffer);
       const shouldRotateAfterFailure =
         failed &&
         Boolean(sessionId) &&
@@ -776,6 +790,13 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       retryAfterMs = match.retryAfterMs ?? retryAfterMs;
       if (match.reason === 'context_overflow') {
         contextOverflowSeen = true;
+        if (!contextOverflowRecoveryRequested && isActionableContextOverflow(outputDetectionBuffer)) {
+          contextOverflowRecoveryRequested = true;
+          handle.kill();
+          contextOverflowFallback = setTimeout(() => {
+            finish({ exitCode: 1, signal: null });
+          }, CONTEXT_OVERFLOW_EXIT_FALLBACK_MS);
+        }
         return;
       }
       reason = toHealthFailureReason(match.reason) ?? reason;
@@ -820,6 +841,16 @@ function toHealthFailureReason(reason: DetectorReason | undefined): HealthFailur
 
 function shouldRotateAfterSessionDiscovery(failed: boolean, output: string): boolean {
   return failed && !isMcpStartupPending(output) && !isConversationInterruptedOnly(output);
+}
+
+function isActionableContextOverflow(output: string): boolean {
+  const cleanOutput = stripVTControlCharacters(output);
+  if (CONVERSATION_INTERRUPTED_NOTICE.test(cleanOutput)) {
+    return true;
+  }
+  return cleanOutput
+    .split(/\r?\n/)
+    .some((line) => ABNORMAL_CONTEXT_OVERFLOW_LINE.test(line.trim()));
 }
 
 function isConversationInterruptedOnly(output: string): boolean {

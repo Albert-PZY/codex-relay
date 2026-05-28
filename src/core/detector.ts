@@ -57,6 +57,9 @@ const RETRY_AFTER_SECONDS = /retry\s+after\s+(\d+)\s*s/i;
 const AVAILABLE_IN = /available\s+in\s+(\d+)\s*(second|seconds|minute|minutes)/i;
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
 const MCP_STARTUP_LINE = /Starting\s+MCP\s+servers\s+\((\d+)\/(\d+)\)/gi;
+const MCP_READY_MARKER = /\b(?:Ready|Context\s+\d+%\s+(?:used|left))\b/i;
+const POST_MCP_RESPONSE_MARKER =
+  /Conversation interrupted - tell the model what to do differently\.|unexpected\s+status|payload\s+too\s+large|request\s+body\s+exceeds/i;
 
 export function detectOutput(raw: string, customQuotaPatterns: string[] = []): DetectorMatch {
   const output = stripVTControlCharacters(raw);
@@ -107,7 +110,12 @@ export function isMcpStartupPending(raw: string): boolean {
   if (!lastMatch?.[1] || !lastMatch[2]) {
     return false;
   }
-  return Number.parseInt(lastMatch[1], 10) < Number.parseInt(lastMatch[2], 10);
+  const pending = Number.parseInt(lastMatch[1], 10) < Number.parseInt(lastMatch[2], 10);
+  if (!pending) {
+    return false;
+  }
+  const tail = output.slice(lastMatch.index ?? 0);
+  return !MCP_READY_MARKER.test(tail) && !POST_MCP_RESPONSE_MARKER.test(tail);
 }
 
 function extractRetryAfterMs(output: string): number | undefined {
