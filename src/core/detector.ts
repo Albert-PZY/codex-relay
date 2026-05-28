@@ -1,9 +1,9 @@
 import { stripVTControlCharacters } from 'node:util';
-import type { DetectorMatch, HealthFailureReason } from '../types.js';
+import type { DetectorMatch, DetectorReason, HealthFailureReason } from '../types.js';
 
 interface DetectionPattern {
   pattern: RegExp;
-  reason: HealthFailureReason;
+  reason: DetectorReason;
 }
 
 const HIGH_PATTERNS: DetectionPattern[] = [
@@ -15,11 +15,6 @@ const HIGH_PATTERNS: DetectionPattern[] = [
   { pattern: /credit(?:s)?\s+exhausted/i, reason: 'quota' },
   { pattern: /payment\s+required/i, reason: 'quota' },
   { pattern: /HTTP\s*402/i, reason: 'quota' },
-  { pattern: /payload\s+too\s+large/i, reason: 'quota' },
-  { pattern: /request\s+body\s+exceeds/i, reason: 'quota' },
-  { pattern: /tier\s+limit/i, reason: 'quota' },
-  { pattern: /HTTP\s*413/i, reason: 'quota' },
-  { pattern: /status\s+413/i, reason: 'quota' },
   { pattern: /invalid\s+api\s+key/i, reason: 'auth' },
   { pattern: /api\s*key.*(?:disabled|deactivated|revoked|blocked)/i, reason: 'auth' },
   { pattern: /api\s*key.*(?:已被禁用|被禁用|已禁用|无效)/i, reason: 'auth' },
@@ -28,6 +23,15 @@ const HIGH_PATTERNS: DetectionPattern[] = [
   { pattern: /HTTP\s*401/i, reason: 'auth' },
   { pattern: /HTTP\s*403/i, reason: 'auth' },
   { pattern: /status\s+40[13]/i, reason: 'auth' }
+];
+
+const CONTEXT_OVERFLOW_PATTERNS: DetectionPattern[] = [
+  { pattern: /payload\s+too\s+large/i, reason: 'context_overflow' },
+  { pattern: /request\s+(?:body|entity)\s+(?:exceeds|too\s+large)/i, reason: 'context_overflow' },
+  { pattern: /body\s+exceeds\s+your\s+tier\s+limit/i, reason: 'context_overflow' },
+  { pattern: /context\s+(?:length\s+)?(?:exceeded|too\s+large)/i, reason: 'context_overflow' },
+  { pattern: /HTTP\s*413/i, reason: 'context_overflow' },
+  { pattern: /status\s+413/i, reason: 'context_overflow' }
 ];
 
 const MEDIUM_PATTERNS: DetectionPattern[] = [
@@ -57,6 +61,13 @@ const MCP_STARTUP_LINE = /Starting\s+MCP\s+servers\s+\((\d+)\/(\d+)\)/gi;
 export function detectOutput(raw: string, customQuotaPatterns: string[] = []): DetectorMatch {
   const output = stripVTControlCharacters(raw);
   const retryAfterMs = extractRetryAfterMs(output);
+
+  for (const { pattern, reason } of CONTEXT_OVERFLOW_PATTERNS) {
+    const match = output.match(pattern);
+    if (match?.[0]) {
+      return withRetry({ confidence: 'high', matchedText: match[0], reason }, retryAfterMs);
+    }
+  }
 
   for (const pattern of customQuotaPatterns) {
     if (pattern && output.toLowerCase().includes(pattern.toLowerCase())) {
