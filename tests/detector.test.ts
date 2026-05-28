@@ -26,14 +26,21 @@ describe('quota detector', () => {
     });
   });
 
-  it('detects payload and tier limit failures as quota signals', () => {
+  it('detects payload and tier limit failures as context overflow signals', () => {
     expect(
       detectOutput(
         'unexpected status 413 Payload Too Large: Request body exceeds your tier limit (3MB for tier 0)'
       )
     ).toMatchObject({
       confidence: 'high',
-      reason: 'quota'
+      reason: 'context_overflow'
+    });
+    expect(detectOutput('Your tier limit is lower than this model.')).toEqual({
+      confidence: 'none'
+    });
+    expect(detectOutput('Unexpected status 413 Payload Too Large', ['Payload Too Large'])).toMatchObject({
+      confidence: 'high',
+      reason: 'context_overflow'
     });
   });
 

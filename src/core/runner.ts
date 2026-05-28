@@ -1,11 +1,28 @@
-import { EventEmitter } from 'node:events';
-import { spawn as spawnChild } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { statSync } from 'node:fs';
-import { copyFile, link, mkdir, open, readFile, readdir, rm, stat, symlink } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import { basename, dirname, join } from 'node:path';
+import { rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { loadAccountsFile, saveAccountsFile } from './accounts.js';
+import {
+  buildCodexArgs,
+  buildCodexEnv,
+  createDefaultProcessAdapter,
+  isExecCodexInvocation,
+  isNonInteractiveCodexInvocation,
+  type ProcessAdapter,
+  type ResumeRequest,
+  type SpawnOptions
+} from './codex-process.js';
+import {
+  prepareRunScopedCodexHome,
+  resolveCodexHomePath,
+  resolveInstanceCodexHome,
+  writeRunScopedAccountFiles
+} from './codex-home.js';
+import {
+  buildContextRecoveryCodexArgs,
+  buildContextRecoveryInput,
+  formatContextRecoveryNotice
+} from './context-recovery.js';
 import { detectOutput, extractSessionId, isMcpStartupPending } from './detector.js';
 import {
   recordAccountFailure,
@@ -19,37 +36,19 @@ import {
 } from './state.js';
 import { buildRotationOrder, getAccountByName, getAccountIndex, isRelayAccountAvailable } from './rotator.js';
 import { appendRotationLog } from './rotation-log.js';
+import { isSameCwd, snapshotKnownSessionIds, SESSION_DISCOVERY_TIMEOUT_MS, waitForSessionId } from './session-discovery.js';
 import { withStoreLock } from './store-lock.js';
-import { readJsonFile, writeJsonAtomic, writeTextAtomic } from '../utils/atomic.js';
 import { resolveDataPaths, type DataPaths } from '../utils/paths.js';
 import { restoreTerminal } from '../utils/terminal.js';
-import type { AccountLease, AccountsFile, HealthFailureReason, HealthFile, PendingResume, RelayAccount, RunnerOptions, SpawnResult, StateFile } from '../types.js';
+import type { AccountLease, AccountsFile, DetectorReason, HealthFailureReason, HealthFile, PendingResume, RelayAccount, RunnerOptions, SpawnResult, StateFile } from '../types.js';
 
-export interface ProcessHandle {
-  onData(callback: (chunk: string) => void): void;
-  onExit(callback: (exit: { exitCode: number | null; signal: NodeJS.Signals | null }) => void): void;
-  kill(): void;
-  write?(chunk: string | Buffer): void;
-  resize?(cols: number, rows: number): void;
-}
-
-export interface ProcessAdapter {
-  readonly supportsInteractiveTui?: boolean;
-  spawn(command: string, args: string[], options: SpawnOptions): ProcessHandle;
-}
-
-export interface SpawnOptions {
-  cwd?: string;
-  env: NodeJS.ProcessEnv;
-  cols?: number;
-  rows?: number;
-}
-
-export interface CodexSpawnTarget {
-  command: string;
-  argsPrefix: string[];
-  shell?: boolean;
-}
+export {
+  buildCodexArgs,
+  buildCodexEnv,
+  createDefaultProcessAdapter,
+  resolveCodexSpawnTarget
+} from './codex-process.js';
+export type { CodexSpawnTarget, ProcessAdapter, ProcessHandle, SpawnOptions } from './codex-process.js';
 
 export interface RunnerDependencies {
   paths?: RunnerDataPaths;
@@ -70,235 +69,18 @@ interface RunAttemptResult {
   shouldRotate: boolean;
   sessionId?: string;
   rotateOnSessionDiscovery?: boolean;
+  contextOverflow?: boolean;
   retryAfterMs?: number;
   reason?: HealthFailureReason;
 }
 
-type NodePtyModule = typeof import('node-pty');
-type NodePtyLoader = () => NodePtyModule;
-type SessionCandidate = {
-  id: string;
-  cwd: string | null;
-  timestampMs: number;
-};
-type SessionSelectionMode = 'closest-to-launch' | 'latest';
-type ResumeRequest = {
-  sessionId: string;
-  prompt: string;
-};
-const nonInteractiveSubcommands = new Set([
-  'exec',
-  'e',
-  'review',
-  'login',
-  'logout',
-  'mcp',
-  'plugin',
-  'marketplace',
-  'completion',
-  'sandbox',
-  'debug',
-  'apply',
-  'a',
-  'cloud',
-  'features',
-  'doctor',
-  'help'
-]);
-const codexOptionsWithValue = new Set([
-  '-c',
-  '--config',
-  '--enable',
-  '--disable',
-  '-m',
-  '--model',
-  '-p',
-  '--profile',
-  '-s',
-  '--sandbox',
-  '-a',
-  '--ask-for-approval',
-  '-C',
-  '--cd',
-  '--add-dir',
-  '-i',
-  '--image'
-]);
 const ACCOUNT_LEASE_TTL_MS = 2 * 60 * 1000;
 const ACCOUNT_LEASE_HEARTBEAT_MS = 30 * 1000;
 const OUTPUT_DETECTION_BUFFER_LIMIT = 8192;
 const ROTATION_EXIT_FALLBACK_MS = 250;
 const HIGH_CONFIDENCE_GRACEFUL_ROTATION_MS = 800;
-const SESSION_DISCOVERY_POLL_INTERVAL_MS = 50;
-const SESSION_DISCOVERY_TIMEOUT_MS = 1_000;
-const SESSION_HISTORY_TAIL_BYTES = 64 * 1024;
 const CONVERSATION_INTERRUPTED_NOTICE = /Conversation interrupted - tell the model what to do differently\./i;
-
-export function resolveCodexSpawnTarget(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform
-): CodexSpawnTarget {
-  const explicitPath = env.CODEX_RELAY_CODEX_PATH?.trim();
-  if (explicitPath) {
-    return resolveExplicitCodexTarget(explicitPath, platform);
-  }
-
-  if (platform !== 'win32') {
-    return { command: 'codex', argsPrefix: [] };
-  }
-
-  const pathValue = getEnvPath(env);
-  if (!pathValue) {
-    return { command: 'codex', argsPrefix: [] };
-  }
-
-  for (const entry of splitPathEntries(pathValue, platform)) {
-    const cmdShim = join(entry, 'codex.cmd');
-    if (isFile(cmdShim)) {
-      const script = resolveNpmCodexScript(entry);
-      if (script) {
-        return { command: process.execPath, argsPrefix: [script] };
-      }
-      return { command: cmdShim, argsPrefix: [], shell: true };
-    }
-
-    const exe = join(entry, 'codex.exe');
-    if (isFile(exe)) {
-      return { command: exe, argsPrefix: [] };
-    }
-  }
-
-  return { command: 'codex', argsPrefix: [] };
-}
-
-function resolveExplicitCodexTarget(command: string, platform: NodeJS.Platform): CodexSpawnTarget {
-  if (platform === 'win32' && command.toLowerCase().endsWith('.cmd')) {
-    const script = resolveNpmCodexScript(dirname(command));
-    if (script) {
-      return { command: process.execPath, argsPrefix: [script] };
-    }
-    return { command, argsPrefix: [], shell: true };
-  }
-  return { command, argsPrefix: [] };
-}
-
-function getEnvPath(env: NodeJS.ProcessEnv): string | undefined {
-  for (const key of Object.keys(env)) {
-    if (key.toLowerCase() === 'path') {
-      return env[key];
-    }
-  }
-  return undefined;
-}
-
-function splitPathEntries(pathValue: string, platform: NodeJS.Platform): string[] {
-  const separator = platform === 'win32' ? ';' : ':';
-  return pathValue
-    .split(separator)
-    .map((entry) => entry.trim().replace(/^"|"$/g, ''))
-    .filter(Boolean);
-}
-
-function resolveNpmCodexScript(binDir: string): string | undefined {
-  const script = join(binDir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
-  return isFile(script) ? script : undefined;
-}
-
-function resolveProcessSpawnTarget(command: string, env: NodeJS.ProcessEnv): CodexSpawnTarget {
-  return command === 'codex' ? resolveCodexSpawnTarget(env) : { command, argsPrefix: [] };
-}
-
-function isFile(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
-export function buildCodexEnv(
-  account: RelayAccount,
-  baseEnv: NodeJS.ProcessEnv = process.env,
-  codexHome?: string
-): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...baseEnv,
-    OPENAI_API_KEY: account.apiKey
-  };
-  if (codexHome) {
-    env.CODEX_HOME = codexHome;
-  }
-  return env;
-}
-
-export function buildCodexArgs(
-  account: RelayAccount,
-  codexArgs: string[],
-  resume?: ResumeRequest
-): string[] {
-  const args: string[] = [];
-  if (account.model) {
-    args.push('-m', account.model);
-  }
-  if (resume) {
-    const execMode = isExecCodexInvocation(codexArgs);
-    if (execMode) {
-      args.push('exec');
-    }
-    if (!execMode) {
-      args.push('--no-alt-screen');
-    }
-    args.push('resume');
-    args.push(resume.sessionId);
-    args.push(resume.prompt);
-    return args;
-  }
-  return [...args, ...withInlineTerminalMode(codexArgs)];
-}
-
-function withInlineTerminalMode(codexArgs: string[]): string[] {
-  if (codexArgs.includes('--no-alt-screen') || isNonInteractiveCodexInvocation(codexArgs)) {
-    return codexArgs;
-  }
-  return [...codexArgs, '--no-alt-screen'];
-}
-
-function isNonInteractiveCodexInvocation(codexArgs: string[]): boolean {
-  const firstPositional = findFirstPositionalArg(codexArgs);
-  return firstPositional !== undefined && nonInteractiveSubcommands.has(firstPositional);
-}
-
-function isExecCodexInvocation(codexArgs: string[]): boolean {
-  const firstPositional = findFirstPositionalArg(codexArgs);
-  return firstPositional === 'exec' || firstPositional === 'e';
-}
-
-function findFirstPositionalArg(args: string[]): string | undefined {
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (!arg) {
-      continue;
-    }
-    if (arg === '--') {
-      return undefined;
-    }
-    if (arg.startsWith('--') && arg.includes('=')) {
-      const optionName = arg.slice(0, arg.indexOf('='));
-      if (codexOptionsWithValue.has(optionName)) {
-        continue;
-      }
-    }
-    if (codexOptionsWithValue.has(arg)) {
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith('-')) {
-      continue;
-    }
-    return arg;
-  }
-  return undefined;
-}
+const MAX_CONTEXT_OVERFLOW_RECOVERIES = 1;
 
 export async function runManagedCodex(
   options: RunnerOptions,
@@ -334,6 +116,8 @@ export async function runManagedCodex(
   });
   const stopHeartbeat = startLeaseHeartbeat(paths, ownerId, now, leaseHeartbeatMs);
   let overlayPrepared = false;
+  let contextRecoveryCount = 0;
+  let contextRecoveryArgs: string[] | undefined;
 
   try {
     while (reserved) {
@@ -343,10 +127,11 @@ export async function runManagedCodex(
         output(formatSharedAccountNotice(account.name));
       }
 
+      const recoveryArgs = contextRecoveryArgs;
       const attemptArgs: RunAttemptArgs = {
         adapter,
         account,
-        codexArgs: options.codexArgs,
+        codexArgs: recoveryArgs ?? options.codexArgs,
         cwd: effectiveCwd,
         env,
         codexHome: instanceDir,
@@ -358,6 +143,10 @@ export async function runManagedCodex(
       if (sessionId) {
         attemptArgs.resume = { sessionId, prompt: resumePrompt };
         attemptArgs.inlineNotice = formatInlineAccountNotice(account);
+      }
+      if (recoveryArgs) {
+        delete attemptArgs.resume;
+        delete attemptArgs.inlineNotice;
       }
 
       if (!overlayPrepared) {
@@ -372,6 +161,9 @@ export async function runManagedCodex(
       const launchStartedAt = Date.now();
 
       const result = await runAttempt(attemptArgs);
+      if (recoveryArgs) {
+        contextRecoveryArgs = undefined;
+      }
 
       const discoveredSessionId = await waitForSessionId({
         instanceDir,
@@ -403,6 +195,31 @@ export async function runManagedCodex(
           success.sessionId = sessionId;
         }
         return success;
+      }
+
+      if (result.contextOverflow) {
+        if (contextRecoveryCount >= MAX_CONTEXT_OVERFLOW_RECOVERIES) {
+          restoreTerminal(outputStream);
+          output('\n[codex-relay] Context is still too large after automatic recovery. Start a new shorter request or split the task.\n');
+          return {
+            exitCode: result.exitCode && result.exitCode !== 0 ? result.exitCode : 1,
+            signal: result.signal,
+            usedAccount: account.name,
+            ...(sessionId ? { sessionId } : {})
+          };
+        }
+        const recoveryInput = await buildContextRecoveryInput({
+          instanceDir,
+          workspaceDir: effectiveCwd,
+          sessionId,
+          codexArgs: options.codexArgs
+        });
+        contextRecoveryCount += 1;
+        contextRecoveryArgs = buildContextRecoveryCodexArgs(recoveryInput);
+        sessionId = undefined;
+        await recordSuccessfulAttempt(paths, healthPath, account, now(), options.disableResume ? undefined : effectiveCwd);
+        output(formatContextRecoveryNotice(recoveryInput));
+        continue;
       }
 
       if (!sessionId) {
@@ -451,9 +268,6 @@ function resolveHealthPath(paths: Pick<DataPaths, 'accounts' | 'state'> & Partia
   return paths.health ?? join(dirname(paths.state), 'health.json');
 }
 
-function resolveCodexHomePath(paths: Pick<DataPaths, 'state'> & Partial<Pick<DataPaths, 'codexHome'>>): string {
-  return paths.codexHome ?? join(dirname(paths.state), 'codex-home');
-}
 
 function resolveRotationLogPath(paths: Pick<DataPaths, 'state'> & Partial<Pick<DataPaths, 'rotationLog'>>): string {
   return paths.rotationLog ?? join(dirname(paths.state), 'rotation.log');
@@ -669,96 +483,6 @@ function pendingResumeKey(cwd: string | undefined): string {
   return cwd?.trim().toLowerCase() || '__global__';
 }
 
-function isSameCwd(left: string, right: string): boolean {
-  return process.platform === 'win32'
-    ? left.localeCompare(right, undefined, { sensitivity: 'accent' }) === 0
-    : left === right;
-}
-
-function resolveInstancesRoot(paths: Pick<DataPaths, 'state'> & Partial<Pick<DataPaths, 'instances'>>): string {
-  return paths.instances ?? join(dirname(paths.state), 'instances');
-}
-
-function resolveInstanceCodexHome(paths: Pick<DataPaths, 'state'> & Partial<Pick<DataPaths, 'instances'>>, runId: string): string {
-  return join(resolveInstancesRoot(paths), runId);
-}
-
-async function prepareRunScopedCodexHome(
-  instanceDir: string,
-  sourceCodexHome: string,
-  account: RelayAccount
-): Promise<void> {
-  await mkdir(sourceCodexHome, { recursive: true });
-  await ensureSourceCodexHomeLayout(sourceCodexHome);
-  await rm(instanceDir, { recursive: true, force: true });
-  await mkdir(instanceDir, { recursive: true });
-
-  const entries = await readdir(sourceCodexHome, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.name === 'auth.json' || entry.name === 'config.toml' || entry.name === 'models_cache.json') {
-      continue;
-    }
-
-    const target = join(sourceCodexHome, entry.name);
-    const link = join(instanceDir, entry.name);
-    await createOverlayEntry(target, link, entry.isDirectory());
-  }
-
-  await copyOptionalFile(join(sourceCodexHome, 'config.toml'), join(instanceDir, 'config.toml'));
-  await writeCodexAuth(join(instanceDir, 'auth.json'), account.apiKey);
-  await writeCodexConfig(join(instanceDir, 'config.toml'), account.baseUrl);
-}
-
-async function ensureSourceCodexHomeLayout(sourceCodexHome: string): Promise<void> {
-  const persistentFiles = ['history.jsonl', 'session_index.jsonl'];
-  for (const fileName of persistentFiles) {
-    const filePath = join(sourceCodexHome, fileName);
-    try {
-      await stat(filePath);
-    } catch (error) {
-      if (!isMissingFile(error)) {
-        throw error;
-      }
-      await writeTextAtomic(filePath, '');
-    }
-  }
-
-  await mkdir(join(sourceCodexHome, 'sessions'), { recursive: true });
-}
-
-async function copyOptionalFile(sourcePath: string, targetPath: string): Promise<void> {
-  try {
-    await copyFile(sourcePath, targetPath);
-  } catch (error) {
-    if (!isMissingFile(error)) {
-      throw error;
-    }
-  }
-}
-
-async function createOverlayEntry(sourcePath: string, targetPath: string, isDirectory: boolean): Promise<void> {
-  if (isDirectory) {
-    await symlink(sourcePath, targetPath, process.platform === 'win32' ? 'junction' : 'dir');
-    return;
-  }
-
-  try {
-    await link(sourcePath, targetPath);
-    return;
-  } catch {
-    try {
-      await symlink(sourcePath, targetPath, 'file');
-      return;
-    } catch {
-      await copyFile(sourcePath, targetPath);
-    }
-  }
-}
-
-async function writeRunScopedAccountFiles(instanceDir: string, account: RelayAccount): Promise<void> {
-  await writeCodexAuth(join(instanceDir, 'auth.json'), account.apiKey);
-  await writeCodexConfig(join(instanceDir, 'config.toml'), account.baseUrl);
-}
 
 async function recordFailedAttempt(
   paths: RunnerDataPaths,
@@ -781,343 +505,6 @@ async function recordFailedAttempt(
 
 function buildRunId(): string {
   return `${Date.now()}-${process.pid}-${randomUUID()}`;
-}
-
-async function snapshotKnownSessionIds(instanceDir: string): Promise<Map<string, number>> {
-  const candidates = await readSessionCandidates(instanceDir);
-  return new Map(candidates.map((candidate) => [candidate.id, candidate.timestampMs]));
-}
-
-async function waitForSessionId(options: {
-  instanceDir: string;
-  workspaceDir: string;
-  launchStartedAt: number;
-  knownSessionIds: Map<string, number>;
-  timeoutMs: number;
-  selectionMode?: SessionSelectionMode;
-  currentSessionId?: string | undefined;
-}): Promise<string | undefined> {
-  const deadline = Date.now() + Math.max(0, options.timeoutMs);
-
-  while (true) {
-    const candidates = await readSessionCandidates(options.instanceDir);
-    const discovered = selectBestSessionCandidate(
-      candidates.filter((candidate) => isNewOrUpdatedSessionCandidate(candidate, options.knownSessionIds)),
-      options.workspaceDir,
-      options.launchStartedAt,
-      options.selectionMode ?? 'closest-to-launch',
-      options.currentSessionId
-    );
-    if (discovered) {
-      return discovered;
-    }
-
-    if (Date.now() >= deadline) {
-      return undefined;
-    }
-    await sleep(SESSION_DISCOVERY_POLL_INTERVAL_MS);
-  }
-}
-
-function isNewOrUpdatedSessionCandidate(candidate: SessionCandidate, knownSessionIds: Map<string, number>): boolean {
-  const knownTimestampMs = knownSessionIds.get(candidate.id);
-  return knownTimestampMs === undefined || candidate.timestampMs > knownTimestampMs;
-}
-
-async function readSessionCandidates(instanceDir: string): Promise<SessionCandidate[]> {
-  const [fromFiles, fromIndex, fromHistory] = await Promise.all([
-    readSessionCandidatesFromFiles(instanceDir),
-    readSessionCandidatesFromIndex(instanceDir),
-    readSessionCandidatesFromHistory(instanceDir)
-  ]);
-  return mergeSessionCandidates([...fromFiles, ...fromIndex, ...fromHistory]);
-}
-
-async function readSessionCandidatesFromFiles(instanceDir: string): Promise<SessionCandidate[]> {
-  const sessionFiles = await collectSessionFiles(join(instanceDir, 'sessions'));
-  const candidates: SessionCandidate[] = [];
-
-  for (const sessionFile of sessionFiles) {
-    const candidate = await readSessionCandidateFromFile(sessionFile);
-    if (candidate) {
-      candidates.push(candidate);
-    }
-  }
-  return candidates;
-}
-
-async function readSessionCandidateFromFile(sessionFile: string): Promise<SessionCandidate | undefined> {
-  let mtimeMs = 0;
-  try {
-    mtimeMs = (await stat(sessionFile)).mtimeMs;
-  } catch {
-    return undefined;
-  }
-
-  const fileText = await readTextIfExists(sessionFile);
-  const firstLine = fileText?.split(/\r?\n/).find((line) => line.trim().length > 0);
-  if (firstLine) {
-    try {
-      const parsed = JSON.parse(firstLine) as {
-        type?: unknown;
-        payload?: { id?: unknown; cwd?: unknown; timestamp?: unknown };
-      };
-      if (parsed.type === 'session_meta' && typeof parsed.payload?.id === 'string') {
-        return {
-          id: parsed.payload.id,
-          cwd: typeof parsed.payload.cwd === 'string' ? parsed.payload.cwd : null,
-          timestampMs: parseDateMs(parsed.payload.timestamp) ?? mtimeMs
-        };
-      }
-    } catch {
-      // Fall back to filename extraction below.
-    }
-  }
-
-  const idFromName = extractSessionIdFromFileName(sessionFile);
-  return idFromName ? { id: idFromName, cwd: null, timestampMs: mtimeMs } : undefined;
-}
-
-async function readSessionCandidatesFromIndex(instanceDir: string): Promise<SessionCandidate[]> {
-  const indexText = await readTextIfExists(join(instanceDir, 'session_index.jsonl'));
-  if (!indexText) {
-    return [];
-  }
-
-  const candidates: SessionCandidate[] = [];
-  for (const line of indexText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
-    try {
-      const parsed = JSON.parse(line) as { id?: unknown; updated_at?: unknown };
-      const timestampMs = parseDateMs(parsed.updated_at);
-      if (typeof parsed.id === 'string' && timestampMs !== null) {
-        candidates.push({ id: parsed.id, cwd: null, timestampMs });
-      }
-    } catch {
-      continue;
-    }
-  }
-  return candidates;
-}
-
-async function readSessionCandidatesFromHistory(instanceDir: string): Promise<SessionCandidate[]> {
-  const historyText = await readTailTextIfExists(join(instanceDir, 'history.jsonl'), SESSION_HISTORY_TAIL_BYTES);
-  if (!historyText) {
-    return [];
-  }
-
-  const candidates: SessionCandidate[] = [];
-  for (const line of historyText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
-    try {
-      const parsed = JSON.parse(line) as {
-        session_id?: unknown;
-        ts?: unknown;
-        cwd?: unknown;
-      };
-      if (typeof parsed.session_id === 'string') {
-        candidates.push({
-          id: parsed.session_id,
-          cwd: typeof parsed.cwd === 'string' ? parsed.cwd : null,
-          timestampMs: parseTimestampMs(parsed.ts) ?? 0
-        });
-      }
-    } catch {
-      continue;
-    }
-  }
-  return candidates;
-}
-
-async function collectSessionFiles(root: string): Promise<string[]> {
-  try {
-    const entries = await readdir(root, { withFileTypes: true });
-    const nested = await Promise.all(entries.map(async (entry) => {
-      const entryPath = join(root, entry.name);
-      if (entry.isDirectory()) {
-        return collectSessionFiles(entryPath);
-      }
-      return entry.isFile() && entry.name.endsWith('.jsonl') ? [entryPath] : [];
-    }));
-    return nested.flat();
-  } catch {
-    return [];
-  }
-}
-
-function selectBestSessionCandidate(
-  candidates: SessionCandidate[],
-  workspaceDir: string,
-  launchStartedAt: number,
-  selectionMode: SessionSelectionMode,
-  currentSessionId: string | undefined
-): string | undefined {
-  const freshCandidates = candidates.filter((candidate) => candidate.timestampMs >= launchStartedAt - 60_000);
-  const cwdMatched = freshCandidates.filter((candidate) => candidate.cwd === null || isSameCwd(candidate.cwd, workspaceDir));
-  const ranked = (cwdMatched.length > 0 ? cwdMatched : freshCandidates).sort((left, right) => {
-    if (selectionMode === 'latest') {
-      const leftIsCurrent = currentSessionId !== undefined && left.id === currentSessionId;
-      const rightIsCurrent = currentSessionId !== undefined && right.id === currentSessionId;
-      if (leftIsCurrent !== rightIsCurrent) {
-        return leftIsCurrent ? 1 : -1;
-      }
-      return right.timestampMs - left.timestampMs;
-    }
-    const leftDelta = Math.abs(left.timestampMs - launchStartedAt);
-    const rightDelta = Math.abs(right.timestampMs - launchStartedAt);
-    if (leftDelta !== rightDelta) {
-      return leftDelta - rightDelta;
-    }
-    return right.timestampMs - left.timestampMs;
-  });
-  return ranked[0]?.id;
-}
-
-function mergeSessionCandidates(candidates: SessionCandidate[]): SessionCandidate[] {
-  const merged = new Map<string, SessionCandidate>();
-  for (const candidate of candidates) {
-    const existing = merged.get(candidate.id);
-    if (!existing || candidate.timestampMs > existing.timestampMs) {
-      merged.set(candidate.id, {
-        id: candidate.id,
-        cwd: candidate.cwd ?? existing?.cwd ?? null,
-        timestampMs: candidate.timestampMs
-      });
-    }
-  }
-  return [...merged.values()];
-}
-
-function parseDateMs(value: unknown): number | null {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null;
-  }
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseTimestampMs(value: unknown): number | null {
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      return null;
-    }
-    return value > 1e12 ? value : value * 1000;
-  }
-  return parseDateMs(value);
-}
-
-function extractSessionIdFromFileName(filePath: string): string | undefined {
-  return basename(filePath).match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i)?.[1];
-}
-
-async function readTextIfExists(filePath: string): Promise<string | undefined> {
-  try {
-    return await readFile(filePath, 'utf8');
-  } catch (error) {
-    if (isMissingFile(error)) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-async function readTailTextIfExists(filePath: string, maxBytes: number): Promise<string | undefined> {
-  try {
-    const handle = await open(filePath, 'r');
-    try {
-      const { size } = await handle.stat();
-      const length = Math.min(size, maxBytes);
-      if (length <= 0) {
-        return '';
-      }
-
-      const buffer = Buffer.alloc(length);
-      const position = Math.max(0, size - length);
-      const { bytesRead } = await handle.read(buffer, 0, length, position);
-      return buffer.toString('utf8', 0, bytesRead);
-    } finally {
-      await handle.close();
-    }
-  } catch (error) {
-    if (isMissingFile(error)) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function writeCodexAuth(filePath: string, apiKey: string): Promise<void> {
-  let auth: Record<string, unknown> = {};
-  try {
-    auth = await readJsonFile<Record<string, unknown>>(filePath);
-  } catch (error) {
-    if (!isMissingFile(error) && !(error instanceof SyntaxError)) {
-      throw error;
-    }
-  }
-  await writeJsonAtomic(filePath, {
-    ...auth,
-    OPENAI_API_KEY: apiKey
-  });
-}
-
-async function writeCodexConfig(filePath: string, baseUrl: string): Promise<void> {
-  let config = '';
-  try {
-    config = await readFile(filePath, 'utf8');
-  } catch (error) {
-    if (!isMissingFile(error)) {
-      throw error;
-    }
-  }
-
-  const provider = findTomlStringValue(config, 'model_provider') ?? 'openai';
-  const nextConfig = setProviderBaseUrl(config, provider, baseUrl);
-  await writeTextAtomic(filePath, nextConfig);
-}
-
-function setProviderBaseUrl(config: string, provider: string, baseUrl: string): string {
-  const normalizedConfig = config.length > 0 ? config.replace(/\r\n/g, '\n') : defaultCodexConfig(provider);
-  const escapedProvider = escapeRegExp(provider);
-  const sectionPattern = new RegExp(`(^\\[model_providers\\.${escapedProvider}\\]\\n)([\\s\\S]*?)(?=^\\[|\\s*$)`, 'm');
-  const match = sectionPattern.exec(normalizedConfig);
-  if (!match) {
-    const separator = normalizedConfig.endsWith('\n') ? '\n' : '\n\n';
-    return `${normalizedConfig}${separator}[model_providers.${provider}]\nbase_url = ${tomlString(baseUrl)}\n`;
-  }
-
-  const header = match[1]!;
-  const body = match[2]!;
-  const updatedBody = /^base_url\s*=.*$/m.test(body)
-    ? body.replace(/^base_url\s*=.*$/m, `base_url = ${tomlString(baseUrl)}`)
-    : `base_url = ${tomlString(baseUrl)}\n${body}`;
-  return `${normalizedConfig.slice(0, match.index)}${header}${updatedBody}${normalizedConfig.slice(match.index + match[0].length)}`;
-}
-
-function defaultCodexConfig(provider: string): string {
-  return `model_provider = ${tomlString(provider)}\n`;
-}
-
-function findTomlStringValue(config: string, key: string): string | undefined {
-  const pattern = new RegExp(`^${escapeRegExp(key)}\\s*=\\s*"([^"]*)"`, 'm');
-  return pattern.exec(config)?.[1];
-}
-
-function tomlString(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function isMissingFile(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
 
 async function releaseAccountLease(paths: RunnerDataPaths, ownerId: string): Promise<void> {
@@ -1305,6 +692,7 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
     let settled = false;
     let shouldRotate = false;
     let mediumSignalSeen = false;
+    let contextOverflowSeen = false;
     let sessionId: string | undefined = args.resume?.sessionId;
     let retryAfterMs: number | undefined;
     let reason: HealthFailureReason | undefined;
@@ -1354,19 +742,22 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       args.outputStream.off('resize', forwardResize);
       restoreInputMode?.();
       const failed = exit.exitCode !== 0 && exit.exitCode !== null;
+      const contextOverflow = contextOverflowSeen && failed && !userExitRequested && !isMcpStartupPending(outputDetectionBuffer);
       const shouldRotateAfterFailure =
         failed &&
         Boolean(sessionId) &&
+        !contextOverflow &&
         !isMcpStartupPending(outputDetectionBuffer) &&
         !isConversationInterruptedOnly(outputDetectionBuffer);
       resolve({
         exitCode: exit.exitCode,
         signal: exit.signal,
-        shouldRotate: userExitRequested ? false : shouldRotate || (mediumSignalSeen && failed) || shouldRotateAfterFailure,
+        shouldRotate: contextOverflow ? true : userExitRequested ? false : shouldRotate || (mediumSignalSeen && failed) || shouldRotateAfterFailure,
         ...(sessionId ? { sessionId } : {}),
+        ...(contextOverflow ? { contextOverflow: true } : {}),
         ...(userExitRequested || !shouldRotateAfterSessionDiscovery(failed, outputDetectionBuffer) ? {} : { rotateOnSessionDiscovery: true }),
         ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-        ...(reason ?? shouldRotateAfterFailure ? { reason: reason ?? 'unknown' } : {})
+        ...((contextOverflow || reason || shouldRotateAfterFailure) ? { reason: contextOverflow ? 'unknown' : reason ?? 'unknown' } : {})
       });
     };
 
@@ -1383,7 +774,11 @@ async function runAttempt(args: RunAttemptArgs): Promise<RunAttemptResult> {
       }
       const match = detectOutput(outputDetectionBuffer, args.customQuotaPatterns);
       retryAfterMs = match.retryAfterMs ?? retryAfterMs;
-      reason = match.reason ?? reason;
+      if (match.reason === 'context_overflow') {
+        contextOverflowSeen = true;
+        return;
+      }
+      reason = toHealthFailureReason(match.reason) ?? reason;
       if (match.confidence === 'high') {
         shouldRotate = true;
         if (!gracefulRotationTimer) {
@@ -1417,6 +812,10 @@ function appendDetectionBuffer(current: string, chunk: string): string {
   return next.length <= OUTPUT_DETECTION_BUFFER_LIMIT
     ? next
     : next.slice(next.length - OUTPUT_DETECTION_BUFFER_LIMIT);
+}
+
+function toHealthFailureReason(reason: DetectorReason | undefined): HealthFailureReason | undefined {
+  return reason === 'context_overflow' ? undefined : reason;
 }
 
 function shouldRotateAfterSessionDiscovery(failed: boolean, output: string): boolean {
@@ -1468,105 +867,4 @@ function enterRawMode(input: NodeJS.ReadStream): (() => void) | undefined {
       ttyInput.pause?.();
     }
   };
-}
-
-export function createDefaultProcessAdapter(loadPty: NodePtyLoader = requireNodePty): ProcessAdapter {
-  try {
-    return new PtyProcessAdapter(loadPty());
-  } catch {
-    return new NodeProcessAdapter();
-  }
-}
-
-class PtyProcessAdapter implements ProcessAdapter {
-  public readonly supportsInteractiveTui = true;
-
-  constructor(private readonly ptyModule: NodePtyModule) {}
-
-  spawn(command: string, args: string[], options: SpawnOptions): ProcessHandle {
-    const target = resolveProcessSpawnTarget(command, options.env);
-    const terminal = this.ptyModule.spawn(target.command, [...target.argsPrefix, ...args], {
-      cwd: options.cwd ?? process.cwd(),
-      env: options.env,
-      cols: options.cols ?? 80,
-      rows: options.rows ?? 24
-    });
-    return new PtyProcessHandle(terminal);
-  }
-}
-
-class PtyProcessHandle implements ProcessHandle {
-  constructor(private readonly terminal: import('node-pty').IPty) {}
-
-  onData(callback: (chunk: string) => void): void {
-    this.terminal.onData(callback);
-  }
-
-  onExit(callback: (exit: { exitCode: number | null; signal: NodeJS.Signals | null }) => void): void {
-    this.terminal.onExit((event) => callback({ exitCode: event.exitCode, signal: null }));
-  }
-
-  kill(): void {
-    this.terminal.kill();
-  }
-
-  write(chunk: string | Buffer): void {
-    this.terminal.write(chunk.toString());
-  }
-
-  resize(cols: number, rows: number): void {
-    this.terminal.resize(cols, rows);
-  }
-}
-
-function requireNodePty(): NodePtyModule {
-  const require = createRequire(import.meta.url);
-  return require('node-pty') as typeof import('node-pty');
-}
-
-class NodeProcessAdapter implements ProcessAdapter {
-  public readonly supportsInteractiveTui = false;
-
-  spawn(command: string, args: string[], options: SpawnOptions): ProcessHandle {
-    const target = resolveProcessSpawnTarget(command, options.env);
-    return new ChildProcessHandle(target.command, [...target.argsPrefix, ...args], options, target.shell === true);
-  }
-}
-
-class ChildProcessHandle extends EventEmitter implements ProcessHandle {
-  private readonly child;
-
-  constructor(
-    private readonly command: string,
-    private readonly args: string[],
-    private readonly options: SpawnOptions,
-    private readonly shell: boolean
-  ) {
-    super();
-    this.child = spawnChild(this.command, this.args, {
-      cwd: this.options.cwd,
-      env: this.options.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: this.shell
-    });
-    this.child.stdout?.on('data', (chunk: Buffer) => this.emit('data', chunk.toString('utf8')));
-    this.child.stderr?.on('data', (chunk: Buffer) => this.emit('data', chunk.toString('utf8')));
-    this.child.on('exit', (exitCode, signal) => this.emit('exit', { exitCode, signal }));
-  }
-
-  onData(callback: (chunk: string) => void): void {
-    this.on('data', callback);
-  }
-
-  onExit(callback: (exit: { exitCode: number | null; signal: NodeJS.Signals | null }) => void): void {
-    this.on('exit', callback);
-  }
-
-  kill(): void {
-    this.child.kill();
-  }
-
-  write(chunk: string | Buffer): void {
-    this.child.stdin?.write(chunk);
-  }
 }

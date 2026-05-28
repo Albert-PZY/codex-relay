@@ -24,6 +24,7 @@ export interface AccountLease {
 }
 
 export type HealthFailureReason = 'auth' | 'quota' | 'rate_limit' | 'server' | 'unknown';
+export type DetectorReason = HealthFailureReason | 'context_overflow';
 
 export interface AccountHealth {
   status: 'active' | 'cooldown';
@@ -76,7 +77,7 @@ export interface DetectorMatch {
   confidence: 'high' | 'medium' | 'none';
   matchedText?: string;
   retryAfterMs?: number;
-  reason?: HealthFailureReason;
+  reason?: DetectorReason;
 }
 
 export interface RunnerOptions {
